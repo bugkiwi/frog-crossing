@@ -319,7 +319,20 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleKeyInput, onNextCharChange]);
 
-  // Main 60fps Physics & Drift Loop
+  // Trigger final leap to top bank
+  const handleFinalLeap = useCallback(() => {
+    if (activeFrog.currentLane === TOTAL_LANES && activeFrog.status === 'sitting') {
+      onUpdateStats((prev) => ({
+        ...prev,
+        score: prev.score + 180 + prev.combo * 20,
+        combo: prev.combo + 1,
+        maxCombo: Math.max(prev.maxCombo, prev.combo + 1),
+        correctKeystrokes: prev.correctKeystrokes + 1,
+        wordsCompleted: prev.wordsCompleted + 1
+      }));
+      jumpFrogTo(null, true);
+    }
+  }, [activeFrog.currentLane, activeFrog.status, jumpFrogTo, onUpdateStats]);
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
@@ -511,7 +524,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   ]);
 
   return (
-    <div className="relative w-full h-full min-h-[480px] flex-1 overflow-hidden select-none bg-gradient-to-b from-teal-400 via-sky-300 to-emerald-400 shadow-inner flex flex-col justify-between">
+    <div className="relative w-full h-full min-h-0 flex-1 overflow-hidden select-none bg-gradient-to-b from-teal-400 via-sky-300 to-emerald-400 shadow-inner flex flex-col justify-between">
       {/* Background Water Currents & Animated Waves */}
       <div className="absolute inset-0 pointer-events-none opacity-25 overflow-hidden">
         <div className="absolute top-[24%] left-0 right-0 h-1 border-b-2 border-dashed border-white/60 animate-pulse"></div>
@@ -530,32 +543,35 @@ export const RiverGame: React.FC<RiverGameProps> = ({
 
       {/* TOP DESTINATION BANK (终点安全岛) */}
       <div
-        className="relative w-full bg-gradient-to-b from-emerald-700 via-emerald-600 to-teal-700 border-b-4 border-emerald-800 shadow-lg px-6 flex items-center justify-between z-10"
+        onClick={handleFinalLeap}
+        className={`relative w-full bg-gradient-to-b from-emerald-700 via-emerald-600 to-teal-700 border-b-4 border-emerald-800 shadow-lg px-3 sm:px-6 flex items-center justify-between z-10 transition ${
+          activeFrog.currentLane === TOTAL_LANES ? 'cursor-pointer ring-4 ring-amber-400/80 animate-pulse' : ''
+        }`}
         style={{ height: '14%' }}
       >
-        <div className="flex items-center gap-2">
-          <span className="text-2xl">🌸</span>
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          <span className="text-xl sm:text-2xl">🌸</span>
           <div>
             <span className="font-extrabold text-xs md:text-sm text-emerald-100 tracking-wider drop-shadow block">
               对岸安全岛 (终点站)
             </span>
-            <span className="text-[10px] text-emerald-300/80">护送所有小青蛙到达即获胜！</span>
+            <span className="hidden sm:inline text-[10px] text-emerald-300/80">护送所有小青蛙到达即获胜！</span>
           </div>
         </div>
 
         {/* Resting slots for rescued frogs */}
-        <div className="flex items-center gap-2 md:gap-3">
+        <div className="flex items-center gap-1.5 md:gap-3">
           {Array.from({ length: settings.totalFrogsPerRound }).map((_, idx) => (
             <div
               key={idx}
-              className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-emerald-800/80 border-2 border-emerald-400/60 flex items-center justify-center relative shadow-inner"
+              className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 rounded-full bg-emerald-800/80 border-2 border-emerald-400/60 flex items-center justify-center relative shadow-inner"
             >
               {idx < arrivedFrogs ? (
                 <div className="animate-bounce">
-                  <FrogCharacter status="celebrating" size={38} />
+                  <FrogCharacter status="celebrating" size={32} />
                 </div>
               ) : (
-                <span className="text-xs text-emerald-300/40 font-mono font-bold">{idx + 1}</span>
+                <span className="text-[10px] sm:text-xs text-emerald-300/40 font-mono font-bold">{idx + 1}</span>
               )}
             </div>
           ))}
@@ -593,16 +609,22 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           );
         })}
 
-        {/* Lane 4 to Top Bank Leap Guide */}
+        {/* Lane 4 to Top Bank Leap Guide / Mobile Touch Button */}
         {activeFrog.currentLane === TOTAL_LANES && activeFrog.status === 'sitting' && (
-          <div className="absolute top-[16%] left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-400/90 text-slate-950 font-black text-xs animate-bounce shadow-xl border-2 border-amber-300">
-            <span>✨ 敲击 [空格 Space] 或任意键，一跃上岸！✨</span>
-          </div>
+          <button
+            onClick={handleFinalLeap}
+            className="absolute top-[12%] left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-5 py-2.5 rounded-full bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 text-slate-950 font-black text-xs sm:text-sm animate-bounce shadow-2xl border-2 border-amber-200 cursor-pointer hover:scale-105 active:scale-95 transition"
+          >
+            <span>🚀 点击一跃上岸！(或敲击空格 Space) 🌸</span>
+          </button>
         )}
 
         {/* ACTIVE FROG */}
         <div
-          className="absolute z-30 transition-transform"
+          onClick={handleFinalLeap}
+          className={`absolute z-30 transition-transform ${
+            activeFrog.currentLane === TOTAL_LANES ? 'cursor-pointer hover:scale-110 active:scale-95' : ''
+          }`}
           style={{
             left: `${activeFrog.x}%`,
             top: `${activeFrog.y}%`,

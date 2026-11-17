@@ -43,14 +43,19 @@ export const VirtualKeyboard: React.FC<VirtualKeyboardProps> = ({
       {/* Keyboard Header / Toolbar */}
       <div className="flex items-center justify-between px-4 py-1.5 bg-emerald-800/90 text-white rounded-t-xl text-xs backdrop-blur-md shadow-md border-t border-x border-emerald-600/40">
         <div className="flex items-center gap-2">
-          <Keyboard className="w-4 h-4 text-emerald-300" />
-          <span className="font-bold tracking-wide">儿童指法小键盘</span>
-          {targetKeyInfo && (
-            <div className="flex items-center gap-1.5 ml-3 bg-amber-400 text-slate-900 px-2.5 py-0.5 rounded-full font-bold animate-pulse text-[11px] shadow">
-              <Sparkles className="w-3 h-3 text-amber-700" />
-              <span>当前目标：按键 [{targetChar?.toUpperCase()}] ➔ {targetKeyInfo.fingerName}</span>
+          <Keyboard className="w-4 h-4 text-emerald-300 shrink-0" />
+          <span className="font-bold tracking-wide truncate">儿童指法小键盘</span>
+          {targetChar === ' ' ? (
+            <div className="flex items-center gap-1.5 ml-2 bg-gradient-to-r from-amber-400 to-yellow-300 text-slate-950 px-2.5 py-0.5 rounded-full font-black animate-bounce text-[11px] shadow">
+              <Sparkles className="w-3 h-3 text-amber-800" />
+              <span>目标：按 [空格 Space] 或点击上岸！</span>
             </div>
-          )}
+          ) : targetKeyInfo ? (
+            <div className="flex items-center gap-1.5 ml-2 bg-amber-400 text-slate-900 px-2.5 py-0.5 rounded-full font-bold animate-pulse text-[11px] shadow truncate">
+              <Sparkles className="w-3 h-3 text-amber-700 shrink-0" />
+              <span className="truncate">当前目标：按键 [{targetChar?.toUpperCase()}] ➔ {targetKeyInfo.fingerName}</span>
+            </div>
+          ) : null}
         </div>
 
         <button
@@ -63,10 +68,10 @@ export const VirtualKeyboard: React.FC<VirtualKeyboardProps> = ({
       </div>
 
       {!isCollapsed && (
-        <div className="p-3 bg-slate-900/85 backdrop-blur-md rounded-b-xl border-b border-x border-slate-700 shadow-2xl flex flex-col gap-2">
-          {/* Finger legend color bar */}
+        <div className="p-1.5 sm:p-2.5 bg-slate-900/90 backdrop-blur-md rounded-b-xl border-b border-x border-slate-700 shadow-2xl flex flex-col gap-1 sm:gap-2">
+          {/* Finger legend color bar (hidden on narrow screens to save vertical space) */}
           {showFingerGuide && (
-            <div className="flex flex-wrap items-center justify-center gap-2 text-[10px] text-slate-300 pb-1 border-b border-slate-700/60">
+            <div className="hidden sm:flex flex-wrap items-center justify-center gap-2 text-[10px] text-slate-300 pb-1 border-b border-slate-700/60">
               <span className="text-slate-400 font-semibold">手指分工：</span>
               {Object.entries(FINGER_NAMES).map(([key, info]) => (
                 <div key={key} className="flex items-center gap-1">
@@ -78,9 +83,9 @@ export const VirtualKeyboard: React.FC<VirtualKeyboardProps> = ({
           )}
 
           {/* Keyboard Keys Layout */}
-          <div className="flex flex-col gap-1.5 items-center select-none">
+          <div className="flex flex-col gap-1 sm:gap-1.5 items-center select-none w-full">
             {KEYBOARD_ROWS.map((row, rowIdx) => (
-              <div key={rowIdx} className="flex gap-1.5 justify-center w-full">
+              <div key={rowIdx} className="flex gap-1 sm:gap-1.5 justify-center w-full">
                 {row.map((keyChar) => {
                   const lowerChar = keyChar.toLowerCase();
                   const keyInfo = KEY_MAPPING[lowerChar];
@@ -99,9 +104,9 @@ export const VirtualKeyboard: React.FC<VirtualKeyboardProps> = ({
                           ? '0 0 14px rgba(251, 191, 36, 0.9), inset 0 0 8px rgba(251, 191, 36, 0.4)'
                           : undefined
                       }}
-                      className={`relative min-w-[34px] sm:min-w-[42px] md:min-w-[48px] h-10 sm:h-11 md:h-12 rounded-lg font-bold text-sm sm:text-base flex flex-col items-center justify-center transition-all cursor-pointer ${
+                      className={`relative flex-1 max-w-[34px] sm:max-w-[44px] md:max-w-[48px] h-8 sm:h-10 md:h-12 rounded-lg font-bold text-xs sm:text-base flex flex-col items-center justify-center transition-all cursor-pointer ${
                         isTarget
-                          ? 'bg-amber-300 text-slate-950 font-black scale-108 -translate-y-1 z-10 animate-bounce'
+                          ? 'bg-amber-300 text-slate-950 font-black scale-108 -translate-y-0.5 z-10 animate-bounce'
                           : isPressed
                           ? 'bg-emerald-400 text-slate-900 translate-y-0.5'
                           : 'bg-slate-800 text-slate-100 hover:bg-slate-700'
@@ -121,16 +126,16 @@ export const VirtualKeyboard: React.FC<VirtualKeyboardProps> = ({
             ))}
 
             {/* Space Bar Row */}
-            <div className="flex gap-2 justify-center w-full mt-1">
+            <div className="flex justify-center w-full mt-0.5 sm:mt-1">
               <button
                 onClick={() => onKeyPress && onKeyPress(' ')}
-                className={`w-1/2 max-w-[280px] h-9 rounded-lg font-semibold text-xs flex items-center justify-center border-2 transition-all cursor-pointer ${
+                className={`w-4/5 max-w-[320px] h-8 sm:h-9 rounded-lg font-bold text-xs flex items-center justify-center border-2 transition-all cursor-pointer ${
                   targetChar === ' '
-                    ? 'bg-amber-300 text-slate-950 border-amber-400 font-bold scale-105'
-                    : 'bg-slate-800 text-slate-300 border-purple-400 hover:bg-slate-700'
+                    ? 'bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 text-slate-950 border-amber-300 shadow-[0_0_16px_rgba(251,191,36,0.9)] scale-105 animate-pulse'
+                    : 'bg-slate-800 text-slate-200 border-purple-400/80 hover:bg-slate-700'
                 }`}
               >
-                空格 (Space) - 大拇指
+                {targetChar === ' ' ? '✨ 点击空格 (Space) 一跃上岸！🚀' : '空格 (Space) - 大拇指'}
               </button>
             </div>
           </div>
