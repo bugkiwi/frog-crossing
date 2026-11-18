@@ -1,21 +1,42 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { UnitCourse, GameSettings, GameStats, LilyPad, ActiveFrog, WordItem } from '../types';
+import { UnitCourse, GameSettings, GameInputMode, GameStats, LilyPad, ActiveFrog, WordItem } from '../types';
 import { LilyPadView } from './LilyPadView';
 import { FrogCharacter } from './FrogCharacter';
+import { VoiceControlPanel, VoiceFeedback } from './VoiceControlPanel';
 import { soundEngine } from '../services/soundEngine';
 import { speechEngine } from '../services/speechEngine';
+import {
+  voiceRecognitionEngine,
+  VoiceRecognitionStatus,
+  matchSpokenWord,
+  matchFinalLeapCommand
+} from '../services/voiceRecognitionEngine';
+
+interface LearningSummary {
+  unitLabel: string;
+  previewedCount: number;
+  totalVocab: number;
+  practicedTimes: number;
+  accuracy: number;
+}
 
 interface RiverGameProps {
   currentCourse: UnitCourse;
   settings: GameSettings;
   isPaused: boolean;
   initialFrogsSaved?: number;
+  learningSummary?: LearningSummary;
   onUpdateStats: (statsUpdater: (prev: GameStats) => GameStats) => void;
   onVictory: () => void;
   onGameOver: () => void;
   onNextCharChange: (char: string | null) => void;
   onFrogReachBank: () => void;
   onFrogLost: () => void;
+  onWordSeen?: (word: string) => void;
+  onWordCompleted?: (word: string) => void;
+  onWordMistake?: (word: string) => void;
+  onOpenStats?: () => void;
+  onSwitchInputMode?: (mode: GameInputMode) => void;
 }
 
 interface FloatingPopup {
@@ -48,19 +69,83 @@ const LANE_OFFSETS: Record<number, number> = {
 
 const PRAISE_WORDS = ['Great! ✨', 'Awesome! 🌟', 'Nice! 🐸', 'Super! 🎉', '太棒了! ⭐'];
 
+/**
+ * Compute remaining safe horizontal runway (%) before a drifting pad exits the screen.
+ */
+function getPadRunway(pad: LilyPad): number {
+  return pad.direction === 1 ? 98 - pad.x : pad.x - 2;
+}
+
+/**
+ * Determine responsive lily pad density per lane based on viewport width so wide desktop
+ * screens never have massive empty water gaps between words.
+ */
+function getPadsPerLaneForWidth(width: number): number {
+  if (width >= 1650) return 5;
+  if (width >= 1180) return 4;
+  return 3;
+}
+
 export const RiverGame: React.FC<RiverGameProps> = ({
   currentCourse,
   settings,
   isPaused,
   initialFrogsSaved = 0,
+  learningSummary,
   onUpdateStats,
   onVictory,
   onGameOver,
   onNextCharChange,
   onFrogReachBank,
-  onFrogLost
+  onFrogLost,
+  onWordSeen,
+  onWordCompleted,
+  onWordMistake,
+  onOpenStats,
+  onSwitchInputMode
 }) => {
   const safeInitialSaved = Math.min(Math.max(0, initialFrogsSaved), Math.max(0, settings.totalFrogsPerRound - 1));
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [padsPerLane, setPadsPerLane] = useState<number>(() =>
+    getPadsPerLaneForWidth(typeof window !== 'undefined' ? window.innerWidth : 1280)
+  );
+  const isVoiceMode = settings.inputMode === 'voice';
+
+  // Voice Recognition UI states
+  const [voiceStatus, setVoiceStatus] = useState<VoiceRecognitionStatus>(() =>
+    voiceRecognitionEngine.getStatus()
+  );
+  const [voiceHeard, setVoiceHeard] = useState<string>('');
+  const [voiceFeedback, setVoiceFeedback] = useState<VoiceFeedback | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  // If the page cold-loaded already in voice mode, wait for a user gesture before requesting mic permission;
+  // if the user clicks "语音" to switch from typing -> voice, auto-start immediately!
+  const userMicPausedRef = useRef<boolean>(settings.inputMode === 'voice');
+
+  // Measure river container width to adapt pad density cleanly across Mobile / iPad / Desktop / Ultrawide
+  useEffect(() => {
+    const updateWidth = (w: number) => {
+      if (w <= 0) return;
+      const nextCount = getPadsPerLaneForWidth(w);
+      setPadsPerLane((prev) => (prev === nextCount ? prev : nextCount));
+    };
+
+    const el = containerRef.current;
+    if (el && typeof ResizeObserver !== 'undefined') {
+      updateWidth(el.clientWidth);
+      const observer = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          updateWidth(entry.contentRect.width);
+        }
+      });
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+
+    const onResize = () => updateWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // Visible state for rendering
   const [pads, setPads] = useState<LilyPad[]>([]);
@@ -92,11 +177,18 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   const isPausedRef = useRef<boolean>(isPaused);
   const waitingFrogsRef = useRef<number>(waitingFrogs);
   const arrivedFrogsRef = useRef<number>(arrivedFrogs);
+  const lastSeenPadIdRef = useRef<string | null>(null);
+  const onWordSeenRef = useRef(onWordSeen);
+  const onWordCompletedRef = useRef(onWordCompleted);
+  const onWordMistakeRef = useRef(onWordMistake);
 
   isPausedRef.current = isPaused;
   targetPadIdRef.current = targetPadId;
   waitingFrogsRef.current = waitingFrogs;
   arrivedFrogsRef.current = arrivedFrogs;
+  onWordSeenRef.current = onWordSeen;
+  onWordCompletedRef.current = onWordCompleted;
+  onWordMistakeRef.current = onWordMistake;
 
   const spawnPopup = useCallback((x: number, y: number, text: string, color: string = 'text-amber-300') => {
     const id = `pop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -145,27 +237,31 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     }
   }, [getNextWord]);
 
-  // Spawn initial staggered river lily pads
+  // Spawn initial staggered river lily pads (adapts density cleanly to screen width)
   useEffect(() => {
     wordIndexRef.current = 0;
     const initialPads: LilyPad[] = [];
 
+    // Compensate horizontal percentage speed slightly on wider viewports so leaves don't zip across 1920px+ screens
+    const wideSpeedScale = padsPerLane >= 5 ? 0.72 : padsPerLane === 4 ? 0.85 : 1.0;
+
     for (let lane = 1; lane <= TOTAL_LANES; lane++) {
       const direction: 1 | -1 = lane % 2 === 1 ? 1 : -1;
-      const speedMultiplier = settings.difficulty === 'easy' ? 0.35 : settings.difficulty === 'hard' ? 1.5 : 0.85;
-      const baseSpeed = 0.048 * speedMultiplier;
+      const speedMultiplier = settings.difficulty === 'easy' ? 0.35 : settings.difficulty === 'hard' ? 1.45 : 0.78;
+      const baseSpeed = 0.044 * speedMultiplier * wideSpeedScale;
 
-      const count = 3;
-      const laneOffset = LANE_OFFSETS[lane] ?? 12;
+      const count = padsPerLane;
+      const step = 100 / count;
+      const laneOffset = (LANE_OFFSETS[lane] ?? 12) % step;
       for (let i = 0; i < count; i++) {
-        const x = (laneOffset + i * (100 / count)) % 100;
+        const x = (laneOffset + i * step) % 100;
         initialPads.push({
           id: `pad-${lane}-${i}-${Math.random().toString(36).substring(2, 6)}`,
           lane,
           x,
-          width: 18,
+          width: Math.round(70 / count),
           direction,
-          speed: baseSpeed + lane * 0.005 * speedMultiplier,
+          speed: baseSpeed + lane * 0.004 * speedMultiplier * wideSpeedScale,
           word: getNextWord(),
           typedLength: 0,
           isTarget: false,
@@ -203,7 +299,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     setTargetPadId(null);
     targetPadIdRef.current = null;
     setPopups([]);
-  }, [currentCourse, settings.difficulty, settings.totalFrogsPerRound, initialFrogsSaved, getNextWord]);
+  }, [currentCourse, settings.difficulty, settings.totalFrogsPerRound, initialFrogsSaved, padsPerLane, getNextWord]);
 
   // Jump Frog Action
   const jumpFrogTo = useCallback(
@@ -262,7 +358,8 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     [resetPadFresh, spawnPopup]
   );
 
-  // Helper: Guarantee a valid, uncompleted target pad in nextLane
+  // Helper: Guarantee a valid, uncompleted, SAFE-RUNWAY target pad in nextLane
+  // Prevents jumping onto a far-edge leaf that immediately drifts off-screen and traps the child!
   const ensureValidTargetInLane = useCallback(
     (nextLane: number, frogX: number): LilyPad | null => {
       const currentPads = padsRef.current;
@@ -279,19 +376,31 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         (p) => p.id === targetPadIdRef.current && p.lane === nextLane && p.typedLength < p.word.word.length
       );
 
-      // Re-pick if current target drifted near/off edge while untouched
-      if (currentTarget && currentTarget.typedLength === 0 && (currentTarget.x < 8 || currentTarget.x > 92)) {
+      // Re-pick if current target is untouched and has drifted too close to its exit edge (< 24% runway)
+      if (
+        currentTarget &&
+        currentTarget.typedLength === 0 &&
+        (currentTarget.x < 8 || currentTarget.x > 92 || getPadRunway(currentTarget) < 24)
+      ) {
         currentTarget = undefined;
       }
 
       if (!currentTarget) {
         const lanePads = currentPads.filter((p) => p.lane === nextLane && p.typedLength < p.word.word.length);
-        const visibleLanePads = lanePads.filter((p) => p.x >= 10 && p.x <= 90);
-        const pool = visibleLanePads.length > 0 ? visibleLanePads : lanePads;
+
+        // Tier 1: Comfortably visible AND plenty of safe drift runway (>= 36%)
+        const primePool = lanePads.filter((p) => p.x >= 10 && p.x <= 90 && getPadRunway(p) >= 36);
+        // Tier 2: Visible with acceptable runway (>= 24%)
+        const safePool = lanePads.filter((p) => p.x >= 8 && p.x <= 92 && getPadRunway(p) >= 24);
+        const pool = primePool.length > 0 ? primePool : safePool.length > 0 ? safePool : lanePads;
+
         if (pool.length > 0) {
-          currentTarget = pool.reduce((prev, curr) =>
-            Math.abs(curr.x - frogX) < Math.abs(prev.x - frogX) ? curr : prev
-          );
+          // Prefer nearby pads while giving a meaningful bonus to pads with generous safe runway
+          currentTarget = pool.reduce((best, curr) => {
+            const bestScore = Math.abs(best.x - frogX) - getPadRunway(best) * 0.25;
+            const currScore = Math.abs(curr.x - frogX) - getPadRunway(curr) * 0.25;
+            return currScore < bestScore ? curr : best;
+          });
           targetPadIdRef.current = currentTarget.id;
           setTargetPadId(currentTarget.id);
         }
@@ -376,6 +485,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
             ...prev,
             wordsCompleted: prev.wordsCompleted + 1
           }));
+          onWordCompletedRef.current?.(currentTarget.word.word);
 
           jumpFrogTo(currentTarget, false);
         } else {
@@ -386,6 +496,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         setPads([...padsRef.current]);
       } else {
         soundEngine.playKeyError();
+        onWordMistakeRef.current?.(currentTarget.word.word);
         onUpdateStats((prev) => ({
           ...prev,
           combo: 0,
@@ -425,7 +536,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleKeyInput, onNextCharChange]);
 
-  // Trigger final leap to top bank via touch/click
+  // Trigger final leap to top bank via touch/click or voice command
   const handleFinalLeap = useCallback(() => {
     if (frogRef.current.currentLane === TOTAL_LANES && frogRef.current.status === 'sitting') {
       soundEngine.unlock();
@@ -441,6 +552,155 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     }
   }, [jumpFrogTo, onUpdateStats]);
 
+  // Process Speech Recognition transcripts in Voice Mode
+  const handleVoiceResult = useCallback(
+    (transcript: string, alternatives: string[], isFinal: boolean) => {
+      if (isPausedRef.current) return;
+      setVoiceHeard(transcript);
+      setVoiceError(null);
+
+      const curFrog = frogRef.current;
+      if (curFrog.status === 'jumping' || curFrog.status === 'drowning' || curFrog.status === 'celebrating') {
+        return;
+      }
+
+      soundEngine.unlock();
+      const nextLane = curFrog.currentLane + 1;
+
+      // Lane 4 -> Top Bank final voice leap ("Jump!" / "Go!" / "跳")
+      if (nextLane > TOTAL_LANES) {
+        if (matchFinalLeapCommand(alternatives)) {
+          voiceRecognitionEngine.suppressFor(1200);
+          setVoiceFeedback({ type: 'success', text: '读得真棒！小青蛙一跃上岸！🎉' });
+          setVoiceHeard('');
+          handleFinalLeap();
+        } else if (isFinal) {
+          soundEngine.playKeyError();
+          setVoiceFeedback({
+            type: 'retry',
+            text: `听到了「${transcript}」，请大声说 "Jump!" 或点击上方按钮上岸哦 💪`
+          });
+        }
+        return;
+      }
+
+      const currentTarget = ensureValidTargetInLane(nextLane, curFrog.x);
+      if (!currentTarget) return;
+
+      // Check primary target pad first, then any other visible uncompleted pad in nextLane
+      let matchedPad: LilyPad | null = null;
+      if (matchSpokenWord(alternatives, currentTarget.word.word)) {
+        matchedPad = currentTarget;
+      } else {
+        const otherMatch = padsRef.current.find(
+          (p) =>
+            p.lane === nextLane &&
+            p.id !== currentTarget.id &&
+            p.x >= 6 &&
+            p.x <= 94 &&
+            p.typedLength < p.word.word.length &&
+            matchSpokenWord(alternatives, p.word.word)
+        );
+        if (otherMatch) {
+          matchedPad = otherMatch;
+        }
+      }
+
+      if (matchedPad) {
+        // Pronounced accurately! Jump to the matched lotus leaf!
+        const wordLen = Math.max(1, matchedPad.word.word.length);
+        matchedPad.typedLength = wordLen;
+
+        onUpdateStats((prev) => {
+          const newCombo = prev.combo + 1;
+          soundEngine.playKeyCorrect(newCombo);
+          return {
+            ...prev,
+            score: prev.score + 60 + wordLen * 15 + newCombo * 10,
+            combo: newCombo,
+            maxCombo: Math.max(prev.maxCombo, newCombo),
+            correctKeystrokes: prev.correctKeystrokes + wordLen,
+            wordsCompleted: prev.wordsCompleted + 1
+          };
+        });
+
+        onWordCompletedRef.current?.(matchedPad.word.word);
+        voiceRecognitionEngine.suppressFor(1400);
+        setVoiceFeedback({
+          type: 'success',
+          text: `发音准确！「${matchedPad.word.word}」跳跃成功！✨`
+        });
+        setVoiceHeard('');
+        jumpFrogTo(matchedPad, false);
+        setPads([...padsRef.current]);
+      } else if (isFinal) {
+        // Incorrect pronunciation -> do NOT jump! Encourage child to try again.
+        soundEngine.playKeyError();
+        onWordMistakeRef.current?.(currentTarget.word.word);
+        onUpdateStats((prev) => ({
+          ...prev,
+          combo: 0,
+          wrongKeystrokes: prev.wrongKeystrokes + 1
+        }));
+        setVoiceFeedback({
+          type: 'retry',
+          text: `听到了「${transcript}」，还没读对哦，请再试着读「${currentTarget.word.word}」💪`
+        });
+      }
+    },
+    [ensureValidTargetInLane, handleFinalLeap, jumpFrogTo, onUpdateStats]
+  );
+
+  // Manage Voice Recognition Engine lifecycle when in Voice Mode
+  useEffect(() => {
+    if (!isVoiceMode) {
+      voiceRecognitionEngine.stop();
+      voiceRecognitionEngine.setCallbacks(null);
+      setVoiceHeard('');
+      setVoiceFeedback(null);
+      setVoiceError(null);
+      userMicPausedRef.current = false;
+      return;
+    }
+
+    voiceRecognitionEngine.setCallbacks({
+      onResult: handleVoiceResult,
+      onStatusChange: (status) => setVoiceStatus(status),
+      onError: (msg) => setVoiceError(msg)
+    });
+
+    if (isPaused) {
+      voiceRecognitionEngine.stop();
+    } else if (!userMicPausedRef.current) {
+      voiceRecognitionEngine.start();
+    }
+
+    return () => {
+      voiceRecognitionEngine.stop();
+      voiceRecognitionEngine.setCallbacks(null);
+    };
+  }, [isVoiceMode, isPaused, handleVoiceResult]);
+
+  const handleToggleVoiceMic = useCallback(() => {
+    soundEngine.unlock();
+    setVoiceError(null);
+    if (voiceStatus === 'listening') {
+      userMicPausedRef.current = true;
+      voiceRecognitionEngine.stop();
+    } else {
+      userMicPausedRef.current = false;
+      voiceRecognitionEngine.start();
+    }
+  }, [voiceStatus]);
+
+  const handlePlayVoiceSample = useCallback(() => {
+    const pad = padsRef.current.find((p) => p.id === targetPadIdRef.current);
+    if (pad) {
+      voiceRecognitionEngine.suppressFor(1400);
+      speechEngine.speak(pad.word.word, true);
+    }
+  }, []);
+
   // Main 60fps Physics & Drift Loop
   useEffect(() => {
     let animId: number;
@@ -453,11 +713,18 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       if (!isPausedRef.current) {
         const curFrog = frogRef.current;
         const currentPads = padsRef.current;
+        const voiceDriftScale = isVoiceMode ? 0.72 : 1.0;
+
+        // Check if child is actively typing the next target word so we pause sinking gracefully
+        const activeTargetPad = targetPadIdRef.current
+          ? currentPads.find((p) => p.id === targetPadIdRef.current)
+          : undefined;
+        const isActivelyTyping = Boolean(activeTargetPad && activeTargetPad.typedLength > 0);
 
         // 1. Move Lily Pads
         for (let i = 0; i < currentPads.length; i++) {
           const pad = currentPads[i];
-          pad.x += pad.direction * pad.speed * 60 * dt;
+          pad.x += pad.direction * pad.speed * voiceDriftScale * 60 * dt;
 
           // Wrap around screen edges
           if (pad.direction === 1 && pad.x > 112) {
@@ -476,10 +743,15 @@ export const RiverGame: React.FC<RiverGameProps> = ({
             }
           }
 
-          // Sinking logic when frog is standing on it
+          // Anti-frustration sinking logic:
+          // - Never sink in Easy mode
+          // - Pause sinking in Voice mode or while actively typing letters
+          // - Gentler sinking rate in Normal mode (0.028/s vs 0.11/s in Hard)
           if (curFrog.currentPadId === pad.id && settings.difficulty !== 'easy') {
-            pad.isSinking = true;
-            pad.sinkTimer += dt * (settings.difficulty === 'hard' ? 0.12 : 0.05);
+            if (!isVoiceMode && !isActivelyTyping) {
+              pad.isSinking = true;
+              pad.sinkTimer += dt * (settings.difficulty === 'hard' ? 0.11 : 0.028);
+            }
           }
         }
 
@@ -533,6 +805,9 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                 curFrog.x = landedPad.x;
                 curFrog.y = LANE_Y[landedPad.lane];
                 if (settings.ttsEnabled) {
+                  if (isVoiceMode) {
+                    voiceRecognitionEngine.suppressFor(1350);
+                  }
                   speechEngine.speak(landedPad.word.word);
                 }
               }
@@ -588,6 +863,11 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           if (nextLane <= TOTAL_LANES) {
             const validTarget = ensureValidTargetInLane(nextLane, curFrog.x);
             if (validTarget) {
+              const targetKey = `${validTarget.id}:${validTarget.word.word}`;
+              if (lastSeenPadIdRef.current !== targetKey) {
+                lastSeenPadIdRef.current = targetKey;
+                onWordSeenRef.current?.(validTarget.word.word);
+              }
               const nextChar = validTarget.word.word[validTarget.typedLength] || null;
               onNextCharChange(nextChar);
             } else {
@@ -613,6 +893,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     return () => cancelAnimationFrame(animId);
   }, [
     ensureValidTargetInLane,
+    isVoiceMode,
     onFrogLost,
     onFrogReachBank,
     onNextCharChange,
@@ -624,8 +905,14 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     settings.ttsEnabled
   ]);
 
+  const activeTargetPad = targetPadId ? pads.find((p) => p.id === targetPadId) ?? null : null;
+  const isFinalLeapReady = activeFrog.currentLane === TOTAL_LANES && activeFrog.status === 'sitting';
+
   return (
-    <div className="relative w-full h-full min-h-0 flex-1 overflow-hidden select-none bg-gradient-to-b from-cyan-400 via-sky-300 to-teal-400 shadow-inner flex flex-col justify-between">
+    <div
+      ref={containerRef}
+      className="relative w-full h-full min-h-0 flex-1 overflow-hidden select-none bg-gradient-to-b from-cyan-400 via-sky-300 to-teal-400 shadow-inner flex flex-col justify-between"
+    >
       {/* Subtle sunlit shimmer & river lane wave guides */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.28),transparent_60%)]" />
@@ -726,6 +1013,10 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                     targetPadIdRef.current = pad.id;
                     setTargetPadId(pad.id);
                     onNextCharChange(pad.word.word[pad.typedLength] || null);
+                    if (isVoiceMode) {
+                      voiceRecognitionEngine.suppressFor(1400);
+                      speechEngine.speak(pad.word.word, true);
+                    }
                   }}
                 />
               ))}
@@ -748,12 +1039,16 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         ))}
 
         {/* Lane 4 to Top Bank Leap Button */}
-        {activeFrog.currentLane === TOTAL_LANES && activeFrog.status === 'sitting' && (
+        {isFinalLeapReady && (
           <button
             onClick={handleFinalLeap}
             className="absolute top-[2%] left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-5 sm:px-6 py-2 sm:py-2.5 rounded-full bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 text-slate-950 font-black text-xs sm:text-sm lg:text-base animate-bounce shadow-[0_6px_24px_rgba(251,191,36,0.65)] border-2 border-white cursor-pointer hover:scale-105 active:scale-95 transition whitespace-nowrap"
           >
-            <span>🚀 点击一跃上岸！(或敲击空格 Space) 🌸</span>
+            <span>
+              {isVoiceMode
+                ? '🎙️ 大声说 "Jump!" 或点击一跃上岸！🌸'
+                : '🚀 点击一跃上岸！(或敲击空格 Space) 🌸'}
+            </span>
           </button>
         )}
 
@@ -805,11 +1100,62 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           </div>
         </div>
 
-        {/* Tip for children on iPad & Desktop */}
-        <div className="hidden md:flex items-center gap-2 text-xs text-emerald-100 bg-emerald-900/65 px-3.5 py-1.5 rounded-xl border border-emerald-400/30 shadow-inner">
-          <span>🎯 敲击黄色光圈荷叶上的单词，也可直接点击荷叶切换目标 (Esc 键重置输入)</span>
-        </div>
+        {/* Live Unit Learning Progress Strip (clickable to open full Learning Report) */}
+        {learningSummary ? (
+          <button
+            onClick={onOpenStats}
+            className="flex items-center gap-2 sm:gap-3 text-[11px] sm:text-xs text-emerald-100 bg-emerald-950/70 hover:bg-emerald-900/90 px-2.5 sm:px-3.5 py-1.5 rounded-xl border border-emerald-400/35 hover:border-amber-300/60 shadow-inner transition cursor-pointer"
+            title="点击查看完整课本单元词汇学习统计报告"
+          >
+            <span className="font-bold text-amber-200 hidden sm:inline">{learningSummary.unitLabel}</span>
+            <span className="text-emerald-200/90">
+              词汇 <strong className="text-sky-300 font-mono">{learningSummary.previewedCount}/{learningSummary.totalVocab}</strong>
+            </span>
+            <span className="text-emerald-200/90 hidden xs:inline sm:inline">
+              已练 <strong className="text-emerald-300 font-mono">{learningSummary.practicedTimes}</strong> 遍
+            </span>
+            <span className="text-emerald-200/90">
+              准确率{' '}
+              <strong
+                className={`font-mono ${
+                  learningSummary.accuracy >= 90
+                    ? 'text-emerald-300'
+                    : learningSummary.accuracy >= 75
+                    ? 'text-amber-300'
+                    : 'text-orange-300'
+                }`}
+              >
+                {learningSummary.accuracy}%
+              </strong>
+            </span>
+            <span className="hidden lg:inline text-[10px] text-emerald-300/80 underline underline-offset-2">
+              详情
+            </span>
+          </button>
+        ) : (
+          <div className="hidden md:flex items-center gap-2 text-xs text-emerald-100 bg-emerald-900/65 px-3.5 py-1.5 rounded-xl border border-emerald-400/30 shadow-inner">
+            <span>🎯 敲击黄色光圈荷叶上的单词，也可直接点击荷叶切换目标 (Esc 键重置输入)</span>
+          </div>
+        )}
       </div>
+
+      {/* VOICE MODE CONTROL PANEL (replaces virtual keyboard when Voice Gameplay is active) */}
+      {isVoiceMode && (
+        <div className="shrink-0 z-20">
+          <VoiceControlPanel
+            targetWord={activeTargetPad?.word ?? null}
+            isFinalLeap={isFinalLeapReady}
+            voiceStatus={voiceStatus}
+            voiceHeard={voiceHeard}
+            voiceFeedback={voiceFeedback}
+            voiceError={voiceError}
+            onToggleListening={handleToggleVoiceMic}
+            onPlaySample={handlePlayVoiceSample}
+            onFinalLeap={handleFinalLeap}
+            onSwitchToTyping={() => onSwitchInputMode?.('typing')}
+          />
+        </div>
+      )}
     </div>
   );
 };

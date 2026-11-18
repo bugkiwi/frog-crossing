@@ -1,6 +1,6 @@
 import React from 'react';
-import { GameSettings, GameDifficulty } from '../types';
-import { X, Sliders, Volume2, Mic, Eye, Keyboard, HelpCircle } from 'lucide-react';
+import { GameSettings, GameDifficulty, GameInputMode } from '../types';
+import { X, Sliders, Volume2, Mic, Eye, Keyboard } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -37,7 +37,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <div className="p-6 space-y-5 text-sm">
+        <div className="p-6 space-y-5 text-sm max-h-[75vh] overflow-y-auto">
+          {/* Input Mode: Typing vs Voice */}
+          <div>
+            <label className="font-bold text-slate-200 block mb-2 flex items-center justify-between">
+              <span>闯关互动方式</span>
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
+                {settings.inputMode === 'voice' ? '🎙️ 语音朗读闯关' : '⌨️ 键盘拼写打字'}
+              </span>
+            </label>
+            <div className="grid grid-cols-2 gap-2.5">
+              {(['typing', 'voice'] as GameInputMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => onUpdateSettings({ inputMode: mode })}
+                  className={`py-2.5 px-3 rounded-xl font-bold text-xs border transition cursor-pointer text-center ${
+                    settings.inputMode === mode
+                      ? mode === 'voice'
+                        ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md ring-2 ring-amber-400/40'
+                        : 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-md ring-2 ring-emerald-400/40'
+                      : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                  }`}
+                >
+                  {mode === 'typing' ? '⌨️ 打字模式 (练指法拼写)' : '🎙️ 语音模式 (读对单词跳跃)'}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1.5">
+              语音模式下，大声读对黄色光圈荷叶上的英文单词小青蛙就跳过去，读不对则原地等待重试！
+            </p>
+          </div>
+
           {/* Difficulty Level */}
           <div>
             <label className="font-bold text-slate-200 block mb-2 flex items-center justify-between">

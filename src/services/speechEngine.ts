@@ -46,8 +46,8 @@ class SpeechEngine {
     this.enabled = enabled;
   }
 
-  public speak(word: string) {
-    if (!this.enabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  public speak(word: string, force: boolean = false) {
+    if ((!this.enabled && !force) || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     if (!this.isInitialized) {
       this.initVoices();
     }

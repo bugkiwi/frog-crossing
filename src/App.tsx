@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { UnitCourse, GameSettings, GameStats } from './types';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { UnitCourse, GameSettings, GameInputMode, GameStats } from './types';
 import { BUILTIN_TEXTBOOKS } from './data/curriculumData';
 import { RiverGame } from './components/RiverGame';
 import { TopNavBar } from './components/TopNavBar';
 import { VirtualKeyboard } from './components/VirtualKeyboard';
 import { SettingsModal } from './components/SettingsModal';
 import { CourseManagerModal } from './components/CourseManagerModal';
+import { LearningStatsModal } from './components/LearningStatsModal';
 import { VictoryModal } from './components/VictoryModal';
 import { GameOverModal } from './components/GameOverModal';
 import { soundEngine } from './services/soundEngine';
@@ -15,11 +16,14 @@ import {
   recordFrogCrossed,
   recordRoundVictory,
   clearCurrentRoundProgress,
-  PersistedProgress
+  createEmptyPendingDelta,
+  PersistedProgress,
+  PendingWordDelta
 } from './services/progressStorage';
 
 const DEFAULT_SETTINGS: GameSettings = {
   difficulty: 'normal',
+  inputMode: 'typing',
   soundVolume: 0.8,
   sfxEnabled: true,
   ttsEnabled: true,
@@ -66,6 +70,9 @@ export const App: React.FC = () => {
   // Settings State
   const [settings, setSettings] = useState<GameSettings>(initialSettings.current);
 
+  // Persisted Progress State (refreshed on every frog crossing / victory / restart)
+  const [persistedProgress, setPersistedProgress] = useState<PersistedProgress>(initialProgress.current);
+
   // Course State: Restore last active course from localStorage, fallback to 《新交际英语 二年级上册》 Unit 1
   const [currentCourse, setCurrentCourse] = useState<UnitCourse>(() => {
     const restored = findCourseById(initialProgress.current.activeCourseId, initialCustomCourses.current);
@@ -82,7 +89,6 @@ export const App: React.FC = () => {
       : null;
 
   const [initialFrogsSaved, setInitialFrogsSaved] = useState<number>(restoredRound?.frogsSaved ?? 0);
-  const [totalScore, setTotalScore] = useState<number>(initialProgress.current.totalScore);
   const [saveToast, setSaveToast] = useState<string | null>(null);
 
   // Game Stats State (restored from localStorage if mid-round)
@@ -99,11 +105,18 @@ export const App: React.FC = () => {
     endTime: null
   }));
 
+  // In-flight per-word learning delta (flushed to localStorage every time a frog crosses the river)
+  const [pendingDelta, setPendingDelta] = useState<PendingWordDelta>(() => createEmptyPendingDelta());
+  const pendingDeltaRef = useRef<PendingWordDelta>(pendingDelta);
+
   // Refs for synchronous access during frog-crossing persistence
   const statsRef = useRef<GameStats>(stats);
   const currentCourseRef = useRef<UnitCourse>(currentCourse);
   const settingsRef = useRef<GameSettings>(settings);
   const lastSavedRoundScoreRef = useRef<number>(restoredRound?.score ?? 0);
+  const lastSavedCorrectKeysRef = useRef<number>(restoredRound?.correctKeystrokes ?? 0);
+  const lastSavedWrongKeysRef = useRef<number>(restoredRound?.wrongKeystrokes ?? 0);
+  const lastSavedWordsRef = useRef<number>(restoredRound?.wordsCompleted ?? 0);
 
   statsRef.current = stats;
   currentCourseRef.current = currentCourse;
@@ -117,6 +130,7 @@ export const App: React.FC = () => {
   // Modals
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isCourseManagerOpen, setIsCourseManagerOpen] = useState(false);
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [isVictoryOpen, setIsVictoryOpen] = useState(false);
   const [isGameOverOpen, setIsGameOverOpen] = useState(false);
 
@@ -134,7 +148,41 @@ export const App: React.FC = () => {
     setSaveToast(msg);
     setTimeout(() => {
       setSaveToast((curr) => (curr === msg ? null : curr));
-    }, 1800);
+    }, 2000);
+  }, []);
+
+  // Word-level learning telemetry callbacks (live in memory + persisted when frog crosses)
+  const handleWordSeen = useCallback((word: string) => {
+    const key = word.toLowerCase();
+    const cur = pendingDeltaRef.current;
+    const next: PendingWordDelta = {
+      ...cur,
+      seen: { ...cur.seen, [key]: (cur.seen[key] ?? 0) + 1 }
+    };
+    pendingDeltaRef.current = next;
+    setPendingDelta(next);
+  }, []);
+
+  const handleWordCompleted = useCallback((word: string) => {
+    const key = word.toLowerCase();
+    const cur = pendingDeltaRef.current;
+    const next: PendingWordDelta = {
+      ...cur,
+      completed: { ...cur.completed, [key]: (cur.completed[key] ?? 0) + 1 }
+    };
+    pendingDeltaRef.current = next;
+    setPendingDelta(next);
+  }, []);
+
+  const handleWordMistake = useCallback((word: string) => {
+    const key = word.toLowerCase();
+    const cur = pendingDeltaRef.current;
+    const next: PendingWordDelta = {
+      ...cur,
+      mistakes: { ...cur.mistakes, [key]: (cur.mistakes[key] ?? 0) + 1 }
+    };
+    pendingDeltaRef.current = next;
+    setPendingDelta(next);
   }, []);
 
   // Sync custom courses with storage
@@ -158,15 +206,29 @@ export const App: React.FC = () => {
     setSettings((prev) => ({ ...prev, ...partial }));
   };
 
+  const handleSetInputMode = useCallback((mode: GameInputMode) => {
+    setSettings((prev) => ({ ...prev, inputMode: mode }));
+  }, []);
+
   const handleResetDefaults = () => {
     setSettings(DEFAULT_SETTINGS);
   };
 
-  // Restart Game (clears unfinished round progress in localStorage while preserving cumulative totalScore)
+  // Restart Game (clears unfinished round progress in localStorage while preserving cumulative totalScore & word history)
   const handleRestart = useCallback((targetCourseId?: string) => {
     const courseId = targetCourseId ?? currentCourseRef.current.id;
-    clearCurrentRoundProgress(courseId);
+    const updatedProgress = clearCurrentRoundProgress(courseId);
+    setPersistedProgress(updatedProgress);
+
     lastSavedRoundScoreRef.current = 0;
+    lastSavedCorrectKeysRef.current = 0;
+    lastSavedWrongKeysRef.current = 0;
+    lastSavedWordsRef.current = 0;
+
+    const emptyDelta = createEmptyPendingDelta();
+    pendingDeltaRef.current = emptyDelta;
+    setPendingDelta(emptyDelta);
+
     setInitialFrogsSaved(0);
     setStats({
       score: 0,
@@ -197,7 +259,8 @@ export const App: React.FC = () => {
   const handleVictory = useCallback(() => {
     const finalStats: GameStats = { ...statsRef.current, endTime: Date.now() };
     setStats(finalStats);
-    recordRoundVictory(currentCourseRef.current.id, finalStats);
+    const updatedProgress = recordRoundVictory(currentCourseRef.current.id, finalStats);
+    setPersistedProgress(updatedProgress);
     soundEngine.playVictoryFanfare();
     setIsVictoryOpen(true);
   }, []);
@@ -216,7 +279,7 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  // Every time a frog jumps across and lands on the bank: immediately refresh score & progress in localStorage!
+  // Every time a frog jumps across and lands on the bank: immediately refresh score, progress & word stats in localStorage!
   const handleFrogReachBank = useCallback(() => {
     const prev = statsRef.current;
     const nextStats: GameStats = {
@@ -227,16 +290,38 @@ export const App: React.FC = () => {
     setStats(nextStats);
 
     const scoreDelta = Math.max(0, nextStats.score - lastSavedRoundScoreRef.current);
+    const correctKeysDelta = Math.max(0, nextStats.correctKeystrokes - lastSavedCorrectKeysRef.current);
+    const wrongKeysDelta = Math.max(0, nextStats.wrongKeystrokes - lastSavedWrongKeysRef.current);
+    const wordsTypedDelta = Math.max(0, nextStats.wordsCompleted - lastSavedWordsRef.current);
+
     lastSavedRoundScoreRef.current = nextStats.score;
+    lastSavedCorrectKeysRef.current = nextStats.correctKeystrokes;
+    lastSavedWrongKeysRef.current = nextStats.wrongKeystrokes;
+    lastSavedWordsRef.current = nextStats.wordsCompleted;
+
+    const flushDelta: PendingWordDelta = {
+      ...pendingDeltaRef.current,
+      correctKeysDelta,
+      wrongKeysDelta,
+      wordsTypedDelta
+    };
 
     const persisted = recordFrogCrossed(
       currentCourseRef.current.id,
       nextStats,
       settingsRef.current.totalFrogsPerRound,
-      scoreDelta
+      scoreDelta,
+      flushDelta
     );
-    setTotalScore(persisted.totalScore);
-    showSavedToast(`💾 进度已保存 (${nextStats.frogsSaved}/${settingsRef.current.totalFrogsPerRound}) · 总积分 ${persisted.totalScore}`);
+
+    const emptyDelta = createEmptyPendingDelta();
+    pendingDeltaRef.current = emptyDelta;
+    setPendingDelta(emptyDelta);
+    setPersistedProgress(persisted);
+
+    showSavedToast(
+      `💾 进度已保存 (${nextStats.frogsSaved}/${settingsRef.current.totalFrogsPerRound}) · 总积分 ${persisted.totalScore}`
+    );
   }, [showSavedToast]);
 
   // Find next unit in the same textbook
@@ -250,13 +335,64 @@ export const App: React.FC = () => {
     }
   };
 
+  // Compute live keystroke accuracy & unit learning summary for HUD and Bottom Bank strip
+  const livePendingDeltaWithKeys = useMemo<PendingWordDelta>(() => {
+    return {
+      ...pendingDelta,
+      correctKeysDelta: Math.max(0, stats.correctKeystrokes - lastSavedCorrectKeysRef.current),
+      wrongKeysDelta: Math.max(0, stats.wrongKeystrokes - lastSavedWrongKeysRef.current),
+      wordsTypedDelta: Math.max(0, stats.wordsCompleted - lastSavedWordsRef.current)
+    };
+  }, [pendingDelta, stats.correctKeystrokes, stats.wrongKeystrokes, stats.wordsCompleted]);
+
+  const liveAccuracy = useMemo(() => {
+    const roundKeys = stats.correctKeystrokes + stats.wrongKeystrokes;
+    if (roundKeys > 0) {
+      return Math.round((stats.correctKeystrokes / roundKeys) * 100);
+    }
+    const rec = persistedProgress.courseRecords[currentCourse.id];
+    const savedKeys = (rec?.totalCorrectKeys ?? 0) + (rec?.totalWrongKeys ?? 0);
+    if (savedKeys > 0 && rec) {
+      return Math.round((rec.totalCorrectKeys / savedKeys) * 100);
+    }
+    return 100;
+  }, [stats.correctKeystrokes, stats.wrongKeystrokes, persistedProgress.courseRecords, currentCourse.id]);
+
+  const learningSummary = useMemo(() => {
+    const tb = BUILTIN_TEXTBOOKS.find((b) => b.units.some((u) => u.id === currentCourse.id));
+    const unitIdx = tb ? tb.units.findIndex((u) => u.id === currentCourse.id) : -1;
+    const unitLabel = tb && unitIdx >= 0 ? `第 ${unitIdx + 1}/${tb.units.length} 单元` : '自定义单元';
+
+    const savedWords = persistedProgress.courseWordStats[currentCourse.id] ?? {};
+    let previewedCount = 0;
+    let practicedTimes = 0;
+
+    for (const item of currentCourse.words) {
+      const key = item.word.toLowerCase();
+      const saved = savedWords[key];
+      const seen = (saved?.seenCount ?? 0) + (pendingDelta.seen[key] ?? 0);
+      const comp = (saved?.completedCount ?? 0) + (pendingDelta.completed[key] ?? 0);
+      if (seen > 0 || comp > 0) previewedCount++;
+      practicedTimes += comp;
+    }
+
+    return {
+      unitLabel,
+      previewedCount,
+      totalVocab: currentCourse.words.length,
+      practicedTimes,
+      accuracy: liveAccuracy
+    };
+  }, [currentCourse, persistedProgress.courseWordStats, pendingDelta, liveAccuracy]);
+
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-900 text-slate-100 overflow-hidden font-sans select-none">
       {/* Top HUD / Navigation */}
       <TopNavBar
         currentCourse={currentCourse}
         score={stats.score}
-        totalScore={totalScore}
+        totalScore={persistedProgress.totalScore}
+        accuracy={liveAccuracy}
         combo={stats.combo}
         frogsSaved={stats.frogsSaved}
         totalFrogs={settings.totalFrogsPerRound}
@@ -267,8 +403,10 @@ export const App: React.FC = () => {
         onRestart={() => handleRestart()}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenCourseManager={() => setIsCourseManagerOpen(true)}
+        onOpenStats={() => setIsStatsOpen(true)}
         onToggleSound={() => handleUpdateSettings({ sfxEnabled: !settings.sfxEnabled })}
         onToggleTts={() => handleUpdateSettings({ ttsEnabled: !settings.ttsEnabled })}
+        onSetInputMode={handleSetInputMode}
       />
 
       {/* LocalStorage Auto-Save Toast Notification */}
@@ -285,13 +423,26 @@ export const App: React.FC = () => {
           currentCourse={currentCourse}
           settings={settings}
           initialFrogsSaved={initialFrogsSaved}
-          isPaused={isPaused || isVictoryOpen || isGameOverOpen || isSettingsOpen || isCourseManagerOpen}
+          learningSummary={learningSummary}
+          isPaused={
+            isPaused ||
+            isVictoryOpen ||
+            isGameOverOpen ||
+            isSettingsOpen ||
+            isCourseManagerOpen ||
+            isStatsOpen
+          }
           onUpdateStats={setStats}
           onVictory={handleVictory}
           onGameOver={() => setIsGameOverOpen(true)}
           onNextCharChange={setNextChar}
           onFrogReachBank={handleFrogReachBank}
           onFrogLost={handleFrogLost}
+          onWordSeen={handleWordSeen}
+          onWordCompleted={handleWordCompleted}
+          onWordMistake={handleWordMistake}
+          onOpenStats={() => setIsStatsOpen(true)}
+          onSwitchInputMode={handleSetInputMode}
         />
 
         {/* Pause Overlay */}
@@ -312,8 +463,8 @@ export const App: React.FC = () => {
         )}
       </div>
 
-      {/* Bottom Virtual Keyboard Guide */}
-      {settings.showVirtualKeyboard && (
+      {/* Bottom Virtual Keyboard Guide (Typing mode only; Voice mode shows VoiceControlPanel) */}
+      {settings.inputMode !== 'voice' && settings.showVirtualKeyboard && (
         <div className="shrink-0 z-20">
           <VirtualKeyboard
             nextChar={nextChar}
@@ -342,6 +493,17 @@ export const App: React.FC = () => {
         customCourses={customCourses}
         onAddCustomCourse={handleAddCustomCourse}
         onDeleteCustomCourse={handleDeleteCustomCourse}
+        progress={persistedProgress}
+      />
+
+      <LearningStatsModal
+        isOpen={isStatsOpen}
+        onClose={() => setIsStatsOpen(false)}
+        currentCourse={currentCourse}
+        stats={stats}
+        progress={persistedProgress}
+        pendingDelta={livePendingDeltaWithKeys}
+        onSelectCourse={handleSelectCourse}
       />
 
       <VictoryModal

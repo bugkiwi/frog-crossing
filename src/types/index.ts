@@ -25,9 +25,11 @@ export interface Textbook {
 }
 
 export type GameDifficulty = 'easy' | 'normal' | 'hard';
+export type GameInputMode = 'typing' | 'voice';
 
 export interface GameSettings {
   difficulty: GameDifficulty;
+  inputMode: GameInputMode;
   soundVolume: number; // 0 to 1
   sfxEnabled: boolean;
   ttsEnabled: boolean; // Voice pronunciation

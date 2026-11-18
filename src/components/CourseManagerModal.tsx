@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { Textbook, UnitCourse, WordItem } from '../types';
 import { BUILTIN_TEXTBOOKS } from '../data/curriculumData';
 import { parsePdfFile, extractWordsFromText, createCustomCourse } from '../services/pdfExtractor';
-import { X, BookOpen, FileUp, Sparkles, Plus, Trash2, Check, FileText } from 'lucide-react';
+import { PersistedProgress } from '../services/progressStorage';
+import { X, BookOpen, FileUp, Sparkles, Plus, Trash2, Check, FileText, Star } from 'lucide-react';
 
 interface CourseManagerModalProps {
   isOpen: boolean;
@@ -12,6 +13,7 @@ interface CourseManagerModalProps {
   customCourses: UnitCourse[];
   onAddCustomCourse: (course: UnitCourse) => void;
   onDeleteCustomCourse: (id: string) => void;
+  progress?: PersistedProgress;
 }
 
 export const CourseManagerModal: React.FC<CourseManagerModalProps> = ({
@@ -21,7 +23,8 @@ export const CourseManagerModal: React.FC<CourseManagerModalProps> = ({
   onSelectCourse,
   customCourses,
   onAddCustomCourse,
-  onDeleteCustomCourse
+  onDeleteCustomCourse,
+  progress
 }) => {
   const [activeTab, setActiveTab] = useState<'builtin' | 'import'>('builtin');
   const [selectedTextbookId, setSelectedTextbookId] = useState<string>(BUILTIN_TEXTBOOKS[0].id);
@@ -199,8 +202,22 @@ export const CourseManagerModal: React.FC<CourseManagerModalProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {currentTextbook.units.map((unit) => {
+                  {currentTextbook.units.map((unit, uIdx) => {
                     const isCurrent = unit.id === currentCourseId;
+                    const rec = progress?.courseRecords[unit.id];
+                    const wordMap = progress?.courseWordStats[unit.id] ?? {};
+                    const seenCount = unit.words.filter((w) => {
+                      const s = wordMap[w.word.toLowerCase()];
+                      return s && (s.seenCount > 0 || s.completedCount > 0);
+                    }).length;
+                    const totalTimes = unit.words.reduce(
+                      (sum, w) => sum + (wordMap[w.word.toLowerCase()]?.completedCount ?? 0),
+                      0
+                    );
+                    const totalKeys = (rec?.totalCorrectKeys ?? 0) + (rec?.totalWrongKeys ?? 0);
+                    const unitAcc =
+                      totalKeys > 0 ? Math.round(((rec?.totalCorrectKeys ?? 0) / totalKeys) * 100) : null;
+
                     return (
                       <div
                         key={unit.id}
@@ -211,13 +228,40 @@ export const CourseManagerModal: React.FC<CourseManagerModalProps> = ({
                         }`}
                       >
                         <div>
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className="font-bold text-sm text-emerald-200">{unit.title}</span>
-                            <span className="text-[11px] bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">
+                          <div className="flex items-center justify-between gap-2 mb-1.5">
+                            <span className="font-bold text-sm text-emerald-200 truncate">
+                              <span className="text-[11px] font-mono text-emerald-400/90 mr-1.5">#{uIdx + 1}</span>
+                              {unit.title}
+                            </span>
+                            <span className="text-[11px] bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full shrink-0">
                               {unit.words.length} 词
                             </span>
                           </div>
-                          <p className="text-xs text-slate-400 mb-2.5">{unit.subtitle}</p>
+                          <p className="text-xs text-slate-400 mb-2">{unit.subtitle}</p>
+
+                          {/* Unit learning progress summary */}
+                          {(seenCount > 0 || totalTimes > 0 || (rec && rec.stars > 0)) && (
+                            <div className="flex flex-wrap items-center gap-2 mb-2.5 px-2.5 py-1 rounded-lg bg-slate-900/70 border border-slate-700/80 text-[11px] text-slate-300">
+                              <span>
+                                已预览 <strong className="text-sky-300 font-mono">{seenCount}/{unit.words.length}</strong>
+                              </span>
+                              <span>
+                                练过 <strong className="text-emerald-300 font-mono">{totalTimes}</strong> 遍
+                              </span>
+                              {unitAcc !== null && (
+                                <span>
+                                  准确率 <strong className="text-amber-300 font-mono">{unitAcc}%</strong>
+                                </span>
+                              )}
+                              {rec && rec.stars > 0 && (
+                                <span className="inline-flex items-center gap-0.5 text-amber-400 ml-auto">
+                                  {Array.from({ length: rec.stars }).map((_, s) => (
+                                    <Star key={s} className="w-3 h-3 fill-current" />
+                                  ))}
+                                </span>
+                              )}
+                            </div>
+                          )}
 
                           {/* Word preview tags */}
                           <div className="flex flex-wrap gap-1.5 mb-3 max-h-16 overflow-y-auto">
