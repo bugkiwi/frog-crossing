@@ -8,6 +8,7 @@
     user-select: none;
     -webkit-user-select: none;
     overflow: hidden;
+    touch-action: manipulation;
   }
 }
 
@@ -17,24 +18,82 @@
     transform: translateY(0px);
   }
   50% {
-    transform: translateY(-6px);
+    transform: translateY(-5px);
   }
 }
 
-@keyframes waterCurrent {
-  0% {
-    background-position: 0% 50%;
+@keyframes leafBob {
+  0%, 100% {
+    transform: translateY(0px);
   }
   50% {
-    background-position: 100% 50%;
+    transform: translateY(-2.5px);
+  }
+}
+
+@keyframes dashMarch {
+  to {
+    stroke-dashoffset: -40;
+  }
+}
+
+@keyframes floatUpFade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.7);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, -14px) scale(1.1);
   }
   100% {
-    background-position: 0% 50%;
+    opacity: 0;
+    transform: translate(-50%, -52px) scale(0.95);
+  }
+}
+
+@keyframes waterWave {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
   }
 }
 
 .animate-float {
   animation: float 3s ease-in-out infinite;
+}
+
+.animate-leaf-bob {
+  animation: leafBob 3.4s ease-in-out infinite;
+}
+
+.animate-dash-march {
+  animation: dashMarch 1.4s linear infinite;
+}
+
+.animate-float-up {
+  animation: floatUpFade 1s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Compact keyboard adjustments for shorter landscape viewports (iPad Landscape 768px, 720p laptops) */
+@media (max-height: 820px) and (min-width: 640px) {
+  .vk-compact-container {
+    padding-top: 0.35rem !important;
+    padding-bottom: 0.4rem !important;
+    gap: 0.25rem !important;
+  }
+  .vk-compact-legend {
+    display: none !important;
+  }
+  .vk-compact-key {
+    height: 2.1rem !important;
+    font-size: 0.85rem !important;
+  }
+  .vk-compact-space {
+    height: 1.95rem !important;
+  }
 }
 
 /* Custom scrollbar for lists */
