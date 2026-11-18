@@ -153,12 +153,8 @@ function tokensMatch(spokenToken: string, targetToken: string): boolean {
   return false;
 }
 
-/**
- * Checks whether any speech recognition alternative matches the target English word/phrase.
- * Returns true ONLY if the spoken words accurately match the target; unrelated words return false.
- */
-export function matchSpokenWord(alternatives: string[], targetWord: string): boolean {
-  const normalizedTarget = normalizeSpokenText(targetWord);
+function matchSingleTarget(alternatives: string[], candidateTarget: string): boolean {
+  const normalizedTarget = normalizeSpokenText(candidateTarget);
   if (!normalizedTarget) return false;
   const targetTokens = normalizedTarget.split(' ');
 
@@ -176,15 +172,16 @@ export function matchSpokenWord(alternatives: string[], targetWord: string): boo
       if (spokenTokens.some((tok) => tokensMatch(tok, targetTokens[0]))) {
         return true;
       }
-      // Also handle ASR splitting compound words like "ice cream" vs "icecream"
-      const compactAlt = normalizedAlt.replace(/\s+/g, '');
-      if (tokensMatch(compactAlt, targetTokens[0])) {
+      // Also handle ASR splitting compound words like "ice cream" vs "icecream" or "o'clock" vs "oclock"
+      const compactAlt = normalizedAlt.replace(/[\s'’]+/g, '');
+      const compactTarget = targetTokens[0].replace(/['’]+/g, '');
+      if (tokensMatch(compactAlt, compactTarget)) {
         return true;
       }
     } else {
       // Multi-word phrase: check contiguous window or compact form
-      const compactTarget = targetTokens.join('');
-      const compactAlt = spokenTokens.join('');
+      const compactTarget = targetTokens.join('').replace(/['’]+/g, '');
+      const compactAlt = spokenTokens.join('').replace(/['’]+/g, '');
       if (compactAlt.includes(compactTarget)) return true;
 
       for (let i = 0; i <= spokenTokens.length - targetTokens.length; i++) {
@@ -200,6 +197,21 @@ export function matchSpokenWord(alternatives: string[], targetWord: string): boo
     }
   }
 
+  return false;
+}
+
+/**
+ * Checks whether any speech recognition alternative matches the target English word/phrase
+ * or any of its declared aliases (e.g. autumn/fall, favourite/favorite, ice cream/ice-cream).
+ * Returns true ONLY if the spoken words accurately match; unrelated words return false.
+ */
+export function matchSpokenWord(alternatives: string[], targetWord: string, aliases?: string[]): boolean {
+  if (matchSingleTarget(alternatives, targetWord)) return true;
+  if (aliases && aliases.length > 0) {
+    for (const alias of aliases) {
+      if (matchSingleTarget(alternatives, alias)) return true;
+    }
+  }
   return false;
 }
 

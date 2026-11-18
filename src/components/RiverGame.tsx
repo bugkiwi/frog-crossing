@@ -79,6 +79,18 @@ function getPadRunway(pad: LilyPad): number {
 }
 
 /**
+ * Auto-skip non-keyboard punctuation like apostrophes and hyphens (e.g. "o'clock", "paper-cut",
+ * "Children's Day", "Mid-Autumn Festival") so children on mobile/iPad touch keyboards never get stuck.
+ */
+function advancePastPunctuation(word: string, index: number): number {
+  let i = index;
+  while (i < word.length && /['’\-]/.test(word[i])) {
+    i++;
+  }
+  return i;
+}
+
+/**
  * Determine responsive lily pad density per lane based on viewport width so wide desktop
  * screens never have massive empty water gaps between words.
  */
@@ -463,10 +475,11 @@ export const RiverGame: React.FC<RiverGameProps> = ({
 
       if (!currentTarget) return;
 
-      const expectedChar = currentTarget.word.word[currentTarget.typedLength]?.toLowerCase();
+      const effectiveIdx = advancePastPunctuation(currentTarget.word.word, currentTarget.typedLength);
+      const expectedChar = currentTarget.word.word[effectiveIdx]?.toLowerCase();
 
       if (expectedChar && keyChar.toLowerCase() === expectedChar) {
-        const nextTyped = currentTarget.typedLength + 1;
+        const nextTyped = advancePastPunctuation(currentTarget.word.word, effectiveIdx + 1);
         currentTarget.typedLength = nextTyped;
 
         onUpdateStats((prev) => {
@@ -590,7 +603,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
 
       // Check primary target pad first, then any other visible uncompleted pad in nextLane
       let matchedPad: LilyPad | null = null;
-      if (matchSpokenWord(alternatives, currentTarget.word.word)) {
+      if (matchSpokenWord(alternatives, currentTarget.word.word, currentTarget.word.aliases)) {
         matchedPad = currentTarget;
       } else {
         const otherMatch = padsRef.current.find(
@@ -600,7 +613,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
             p.x >= 6 &&
             p.x <= 94 &&
             p.typedLength < p.word.word.length &&
-            matchSpokenWord(alternatives, p.word.word)
+            matchSpokenWord(alternatives, p.word.word, p.word.aliases)
         );
         if (otherMatch) {
           matchedPad = otherMatch;

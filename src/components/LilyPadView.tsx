@@ -47,8 +47,14 @@ export const LilyPadView: React.FC<LilyPadViewProps> = ({
         </div>
       )}
 
-      {/* Lotus Leaf Container */}
-      <div className="relative w-[112px] sm:w-[162px] md:w-[178px] lg:w-[204px] h-[60px] sm:h-[70px] lg:h-[78px] flex items-center justify-center animate-leaf-bob">
+      {/* Lotus Leaf Container (scales slightly wider for multi-word holiday/cultural phrases) */}
+      <div
+        className={`relative h-[60px] sm:h-[70px] lg:h-[78px] flex items-center justify-center animate-leaf-bob ${
+          word.word.length >= 15
+            ? 'w-[144px] sm:w-[196px] md:w-[216px] lg:w-[244px]'
+            : 'w-[112px] sm:w-[162px] md:w-[178px] lg:w-[204px]'
+        }`}
+      >
         {/* Subtle water shadow & ripple ring beneath the leaf */}
         <div
           className={`absolute inset-x-2 -bottom-1 h-4 rounded-full blur-[3px] transition-all pointer-events-none ${
@@ -138,7 +144,13 @@ export const LilyPadView: React.FC<LilyPadViewProps> = ({
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-1.5">
           {/* English Word Pill */}
           <div
-            className={`px-2.5 sm:px-3.5 py-0.5 rounded-full font-bold tracking-wider text-sm sm:text-base lg:text-lg leading-tight flex items-center justify-center shadow-md transition-all whitespace-nowrap ${
+            className={`px-2 sm:px-3 py-0.5 rounded-full font-bold tracking-wide leading-tight flex items-center justify-center shadow-md transition-all whitespace-nowrap ${
+              word.word.length >= 16
+                ? 'text-[10px] sm:text-xs lg:text-sm'
+                : word.word.length >= 11
+                ? 'text-xs sm:text-sm lg:text-base'
+                : 'text-sm sm:text-base lg:text-lg'
+            } ${
               isTarget
                 ? 'bg-amber-50 border-2 border-amber-400 text-slate-900 shadow-amber-500/30'
                 : 'bg-white/95 border border-emerald-500/60 text-slate-800'

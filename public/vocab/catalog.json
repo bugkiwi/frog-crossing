@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0",
+  "books": [
+    {
+      "id": "nce-g2-upper",
+      "name": "新交际英语 二年级上册",
+      "category": "textbook",
+      "stage": "primary",
+      "grade": "二年级",
+      "semester": "upper",
+      "publisher": "外语教学与研究出版社",
+      "unitCount": 8,
+      "wordCount": 140,
+      "path": "/vocab/nce-g2-upper.json"
+    }
+  ]
+}

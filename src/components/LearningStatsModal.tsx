@@ -214,10 +214,15 @@ export const LearningStatsModal: React.FC<LearningStatsModalProps> = ({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-extrabold text-sm text-slate-100 group-hover:text-emerald-300 transition">
                             {w.word}
                           </span>
+                          {w.pos && (
+                            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-950/80 border border-emerald-500/30 text-emerald-300/90">
+                              {w.pos}
+                            </span>
+                          )}
                           <Volume2 className="w-3.5 h-3.5 text-slate-500 group-hover:text-emerald-400 transition shrink-0" />
                         </div>
                         <div className="text-[11px] text-slate-400 truncate mt-0.5">

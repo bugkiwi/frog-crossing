@@ -135,7 +135,7 @@ export const CourseManagerModal: React.FC<CourseManagerModalProps> = ({
             }`}
           >
             <BookOpen className="w-4 h-4" />
-            <span>官方精编教材 (新交际/北京版)</span>
+            <span>官方同步教材</span>
           </button>
 
           <button

@@ -1,13 +1,21 @@
+export type VocabCategory = 'textbook' | 'exam' | 'phonics' | 'custom';
+export type VocabStage = 'primary' | 'junior' | 'senior' | 'ielts' | 'toefl' | 'cet' | 'other';
+export type VocabSemester = 'upper' | 'lower' | 'full' | 'none';
+
 export interface WordItem {
   word: string;
   chinese: string;
   phonetic?: string;
+  pos?: string;
   category?: string;
   difficulty?: number; // 1 (easy/short) to 3 (harder)
+  aliases?: string[];
+  example?: string;
 }
 
 export interface UnitCourse {
   id: string;
+  unitNumber?: number;
   title: string;
   subtitle: string;
   grade: string;
@@ -18,10 +26,41 @@ export interface UnitCourse {
 export interface Textbook {
   id: string;
   name: string;
+  category?: VocabCategory;
+  stage?: VocabStage;
   grade: string;
+  semester?: VocabSemester;
   publisher: string;
   description: string;
+  tags?: string[];
   units: UnitCourse[];
+}
+
+export interface VocabUnitEntry {
+  id?: string;
+  unitNumber?: number;
+  title: string;
+  subtitle?: string;
+  words: WordItem[];
+}
+
+export interface VocabBookEntry {
+  id?: string;
+  name: string;
+  category?: VocabCategory;
+  stage?: VocabStage;
+  grade?: string;
+  semester?: VocabSemester;
+  publisher?: string;
+  description?: string;
+  tags?: string[];
+  units: VocabUnitEntry[];
+}
+
+export interface VocabJsonPack {
+  schemaVersion?: string;
+  book?: VocabBookEntry;
+  books?: VocabBookEntry[];
 }
 
 export type GameDifficulty = 'easy' | 'normal' | 'hard';
