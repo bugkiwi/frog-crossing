@@ -45,10 +45,10 @@ export const VoiceControlPanel: React.FC<VoiceControlPanelProps> = ({
     : '点击左侧按钮打开麦克风，大声读出荷叶上的英文单词吧！';
 
   return (
-    <div className="w-full h-[136px] md:h-[90px] bg-slate-950/95 border-t-2 border-emerald-500/45 px-3 sm:px-5 lg:px-8 flex items-center text-slate-100 shadow-2xl select-none overflow-hidden shrink-0">
-      <div className="w-full max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-2 md:gap-4">
+    <div className="w-full h-[126px] md:h-[86px] lg:h-[90px] bg-slate-950/95 border-t-2 border-emerald-500/45 px-2.5 sm:px-4 lg:px-8 flex items-center text-slate-100 shadow-2xl select-none overflow-hidden shrink-0">
+      <div className="w-full max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-1.5 md:gap-3 lg:gap-4">
         {/* Left: Target Word Prompt & Sample Audio (strictly fixed height to prevent layout jump) */}
-        <div className="flex items-center gap-2.5 w-full md:w-[276px] lg:w-[296px] h-[54px] md:h-[62px] shrink-0 justify-between bg-slate-900/90 border border-emerald-500/35 rounded-2xl px-3.5 shadow-inner overflow-hidden">
+        <div className="flex items-center gap-2 w-full md:w-[238px] lg:w-[296px] h-[52px] md:h-[60px] lg:h-[62px] shrink-0 justify-between bg-slate-900/90 border border-emerald-500/35 rounded-2xl px-3 lg:px-3.5 shadow-inner overflow-hidden">
           {isFinalLeap ? (
             <div className="flex items-center justify-between gap-2.5 w-full min-w-0">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -106,11 +106,11 @@ export const VoiceControlPanel: React.FC<VoiceControlPanelProps> = ({
         </div>
 
         {/* Center: Mic Toggle + Fixed-Height Live Recognition Feedback */}
-        <div className="flex-1 w-full h-[54px] md:h-[62px] flex items-center justify-center gap-2.5 sm:gap-3 min-w-0">
+        <div className="flex-1 w-full h-[50px] md:h-[60px] lg:h-[62px] flex items-center justify-center gap-2 sm:gap-2.5 lg:gap-3 min-w-0">
           <button
             onClick={onToggleListening}
             disabled={isUnsupported}
-            className={`relative h-[46px] md:h-[52px] flex items-center gap-2 px-3.5 sm:px-5 rounded-2xl font-extrabold text-xs sm:text-sm transition cursor-pointer shrink-0 shadow-lg active:scale-95 ${
+            className={`relative h-[44px] md:h-[50px] lg:h-[52px] flex items-center gap-1.5 lg:gap-2 px-3 sm:px-3.5 lg:px-5 rounded-2xl font-extrabold text-xs lg:text-sm transition cursor-pointer shrink-0 shadow-lg active:scale-95 ${
               isUnsupported
                 ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'
                 : isListening
@@ -124,11 +124,11 @@ export const VoiceControlPanel: React.FC<VoiceControlPanelProps> = ({
                 <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-rose-500 border border-white" />
               </span>
             )}
-            {isListening ? <Mic className="w-4 h-4 sm:w-5 sm:h-5 animate-pulse" /> : <MicOff className="w-4 h-4 sm:w-5 sm:h-5" />}
-            <span className="sm:hidden">
-              {isUnsupported ? '不支持语音' : isListening ? '正在听读' : '开麦闯关'}
+            {isListening ? <Mic className="w-4 h-4 lg:w-5 lg:h-5 animate-pulse" /> : <MicOff className="w-4 h-4 lg:w-5 lg:h-5" />}
+            <span className="lg:hidden whitespace-nowrap">
+              {isUnsupported ? '不支持语音' : isListening ? '正在听读' : '开启麦克风'}
             </span>
-            <span className="hidden sm:inline whitespace-nowrap">
+            <span className="hidden lg:inline whitespace-nowrap">
               {isUnsupported
                 ? '浏览器不支持语音'
                 : isListening
@@ -139,7 +139,7 @@ export const VoiceControlPanel: React.FC<VoiceControlPanelProps> = ({
 
           {/* Live Transcript & Match/Mismatch Feedback (strictly fixed 2-row layout, zero height jump!) */}
           <div
-            className="flex-1 min-w-0 h-[52px] md:h-[62px] bg-slate-900/90 border border-slate-700/80 rounded-2xl px-3 sm:px-3.5 flex flex-col justify-center gap-0.5 overflow-hidden"
+            className="flex-1 min-w-0 h-[48px] md:h-[60px] lg:h-[62px] bg-slate-900/90 border border-slate-700/80 rounded-2xl px-2.5 sm:px-3.5 flex flex-col justify-center gap-0.5 overflow-hidden"
             title={statusPrimaryText}
           >
             {/* Row 1: Primary status / feedback */}
@@ -191,7 +191,7 @@ export const VoiceControlPanel: React.FC<VoiceControlPanelProps> = ({
         {/* Right: Quick Switch Back to Typing Mode */}
         <button
           onClick={onSwitchToTyping}
-          className="hidden md:flex h-[42px] items-center gap-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600/80 text-slate-200 text-xs font-bold transition cursor-pointer shrink-0"
+          className="hidden lg:flex h-[42px] items-center gap-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600/80 text-slate-200 text-xs font-bold transition cursor-pointer shrink-0"
           title="切换回键盘打字模式"
         >
           <Keyboard className="w-4 h-4 text-purple-300" />

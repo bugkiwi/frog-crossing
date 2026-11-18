@@ -8,7 +8,7 @@ interface FrogCharacterProps {
   isLeader?: boolean;
 }
 
-export const FrogCharacter: React.FC<FrogCharacterProps> = ({
+export const FrogCharacter: React.FC<FrogCharacterProps> = React.memo(({
   status,
   size = 64,
   jumpProgress = 0,
@@ -19,7 +19,7 @@ export const FrogCharacter: React.FC<FrogCharacterProps> = ({
   let jumpScaleY = 1;
   let jumpRotation = 0;
 
-  if (status === 'jumping') {
+  if (status === 'jumping' && jumpProgress > 0) {
     // Parabolic arc stretch: squash at launch/land, stretch mid-air
     const arc = Math.sin(jumpProgress * Math.PI);
     jumpScaleY = 1 + arc * 0.35;
@@ -32,14 +32,17 @@ export const FrogCharacter: React.FC<FrogCharacterProps> = ({
 
   return (
     <div
-      className="relative flex items-center justify-center pointer-events-none select-none transition-transform"
+      className="relative flex items-center justify-center pointer-events-none select-none"
       style={{
         width: `${size}px`,
         height: `${size}px`,
-        transform: `scale(${jumpScaleX}, ${jumpScaleY}) rotate(${jumpRotation}deg)`,
+        transform:
+          jumpScaleX !== 1 || jumpScaleY !== 1 || jumpRotation !== 0
+            ? `scale(${jumpScaleX}, ${jumpScaleY}) rotate(${jumpRotation}deg)`
+            : undefined,
       }}
     >
-      <svg viewBox="0 0 100 100" className="w-full h-full overflow-visible drop-shadow-md">
+      <svg viewBox="0 0 100 100" className="w-full h-full overflow-visible">
         <defs>
           <radialGradient id="frogSkin" cx="40%" cy="40%" r="60%">
             <stop offset="0%" stopColor="#86EFAC" />
@@ -167,4 +170,4 @@ export const FrogCharacter: React.FC<FrogCharacterProps> = ({
       </svg>
     </div>
   );
-};
+});

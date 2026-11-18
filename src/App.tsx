@@ -23,7 +23,7 @@ import {
 
 const DEFAULT_SETTINGS: GameSettings = {
   difficulty: 'normal',
-  inputMode: 'typing',
+  inputMode: 'voice',
   soundVolume: 0.8,
   sfxEnabled: true,
   ttsEnabled: true,
@@ -33,6 +33,9 @@ const DEFAULT_SETTINGS: GameSettings = {
   totalFrogsPerRound: 5,
   driftSpeedMultiplier: 1.0
 };
+
+const SETTINGS_VERSION_KEY = 'frog_crossing_settings_version';
+const CURRENT_SETTINGS_VERSION = '2';
 
 function loadInitialCustomCourses(): UnitCourse[] {
   try {
@@ -46,7 +49,19 @@ function loadInitialCustomCourses(): UnitCourse[] {
 function loadInitialSettings(): GameSettings {
   try {
     const saved = localStorage.getItem('frog_crossing_settings');
-    return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+    const savedVer = localStorage.getItem(SETTINGS_VERSION_KEY);
+    if (!saved) {
+      localStorage.setItem(SETTINGS_VERSION_KEY, CURRENT_SETTINGS_VERSION);
+      return DEFAULT_SETTINGS;
+    }
+    const merged: GameSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
+    // One-time migration: adopt Voice Mode as the new default for returning browsers
+    if (savedVer !== CURRENT_SETTINGS_VERSION) {
+      merged.inputMode = 'voice';
+      localStorage.setItem(SETTINGS_VERSION_KEY, CURRENT_SETTINGS_VERSION);
+      localStorage.setItem('frog_crossing_settings', JSON.stringify(merged));
+    }
+    return merged;
   } catch {
     return DEFAULT_SETTINGS;
   }
@@ -128,6 +143,26 @@ export const App: React.FC = () => {
   const [nextChar, setNextChar] = useState<string | null>(null);
   // Persists across RiverGame remounts (next unit / restart) so microphone stays open once activated
   const [voiceMicActive, setVoiceMicActive] = useState<boolean>(false);
+
+  // If browser microphone permission is already granted and app starts in Voice Mode, auto-enable mic seamlessly
+  useEffect(() => {
+    if (initialSettings.current.inputMode !== 'voice') return;
+    if (typeof navigator === 'undefined' || !navigator.permissions?.query) return;
+    let cancelled = false;
+    navigator.permissions
+      .query({ name: 'microphone' as PermissionName })
+      .then((status) => {
+        if (!cancelled && status.state === 'granted') {
+          setVoiceMicActive(true);
+        }
+      })
+      .catch(() => {
+        // Safari/older browsers may not support microphone permission query; user clicks the inviting CTA button
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Modals
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -395,7 +430,7 @@ export const App: React.FC = () => {
   }, [currentCourse, persistedProgress.courseWordStats, pendingDelta, liveAccuracy]);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-slate-900 text-slate-100 overflow-hidden font-sans select-none">
+    <div className="flex flex-col h-[100dvh] w-screen bg-slate-900 text-slate-100 overflow-hidden font-sans select-none">
       {/* Top HUD / Navigation */}
       <TopNavBar
         currentCourse={currentCourse}

@@ -91,13 +91,13 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
 
       {/* Middle: Frogs Rescue Queue & Score */}
       <div className="flex items-center gap-1 sm:gap-2 lg:gap-3 shrink-0">
-        {/* Rescued Frogs Progress: compact on mobile, full frog row on iPad/Desktop */}
+        {/* Rescued Frogs Progress: compact on mobile & iPad Portrait (768px), full frog row on lg+ */}
         <div className="flex items-center gap-0.5 sm:gap-1 bg-emerald-900/70 px-1.5 sm:px-2.5 py-1 rounded-full border border-emerald-700/60">
           <span className="text-xs text-emerald-300 font-medium hidden xl:inline mr-1">护送进度:</span>
-          <span className="md:hidden text-[11px] sm:text-xs font-bold text-emerald-200 font-mono">
+          <span className="lg:hidden text-[11px] sm:text-xs font-bold text-emerald-200 font-mono">
             🐸{frogsSaved}/{totalFrogs}
           </span>
-          <div className="hidden md:flex items-center gap-0.5 lg:gap-1">
+          <div className="hidden lg:flex items-center gap-0.5 lg:gap-1">
             {Array.from({ length: totalFrogs }).map((_, idx) => (
               <span
                 key={idx}

@@ -122,6 +122,15 @@ export const RiverGame: React.FC<RiverGameProps> = ({
 }) => {
   const safeInitialSaved = Math.min(Math.max(0, initialFrogsSaved), Math.max(0, settings.totalFrogsPerRound - 1));
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const riverAreaRef = useRef<HTMLDivElement | null>(null);
+  const riverSizeRef = useRef<{ width: number; height: number }>({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    height: typeof window !== 'undefined' ? Math.max(360, window.innerHeight - 220) : 600
+  });
+  const padDomRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const frogDomRef = useRef<HTMLDivElement | null>(null);
+  const lastReportedNextCharRef = useRef<string | null | undefined>(undefined);
+
   const [padsPerLane, setPadsPerLane] = useState<number>(() =>
     getPadsPerLaneForWidth(typeof window !== 'undefined' ? window.innerWidth : 1280)
   );
@@ -135,30 +144,99 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   const [voiceFeedback, setVoiceFeedback] = useState<VoiceFeedback | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
 
-  // Measure river container width to adapt pad density cleanly across Mobile / iPad / Desktop / Ultrawide
+  // Deduplicated nextChar reporter (never triggers unnecessary App re-renders in 60fps rAF loop)
+  const reportNextChar = useCallback(
+    (char: string | null) => {
+      if (lastReportedNextCharRef.current !== char) {
+        lastReportedNextCharRef.current = char;
+        onNextCharChange(char);
+      }
+    },
+    [onNextCharChange]
+  );
+
+  // Preload native human pronunciation audio for the active unit's upcoming words
   useEffect(() => {
-    const updateWidth = (w: number) => {
-      if (w <= 0) return;
-      const nextCount = getPadsPerLaneForWidth(w);
-      setPadsPerLane((prev) => (prev === nextCount ? prev : nextCount));
+    speechEngine.preloadWords(currentCourse.words.map((w) => w.word));
+  }, [currentCourse]);
+
+  // Direct GPU-composited DOM transform sync (runs at 60fps with ZERO React re-renders!)
+  const syncTransformsToDom = useCallback(() => {
+    const { width, height } = riverSizeRef.current;
+    if (width <= 0 || height <= 0) return;
+
+    const currentPads = padsRef.current;
+    for (let i = 0; i < currentPads.length; i++) {
+      const pad = currentPads[i];
+      const el = padDomRefs.current.get(pad.id);
+      if (!el) continue;
+      const xPx = (pad.x / 100) * width;
+      const sinkScale = Math.max(0.75, 1 - pad.sinkTimer * 0.25);
+      const scale = (pad.isTarget ? 1.06 : 1) * sinkScale;
+      el.style.transform = `translate3d(${xPx.toFixed(1)}px, -50%, 0) translateX(-50%) scale(${scale.toFixed(3)})`;
+      if (pad.sinkTimer > 0) {
+        el.style.opacity = String(Math.max(0.25, 1 - pad.sinkTimer * 0.75).toFixed(3));
+      } else if (el.style.opacity !== '1') {
+        el.style.opacity = '1';
+      }
+    }
+
+    const frogEl = frogDomRef.current;
+    if (frogEl) {
+      const f = frogRef.current;
+      const fx = (f.x / 100) * width;
+      const fy = (f.y / 100) * height;
+      let sx = 1;
+      let sy = 1;
+      let rot = 0;
+      if (f.status === 'jumping') {
+        const arc = Math.sin(f.jumpProgress * Math.PI);
+        sy = 1 + arc * 0.32;
+        sx = 1 - arc * 0.18;
+        rot = (f.jumpProgress - 0.5) * 18;
+      } else if (f.status === 'drowning') {
+        sy = 0.72;
+        sx = 0.9;
+      }
+      frogEl.style.transform = `translate3d(${fx.toFixed(1)}px, ${fy.toFixed(1)}px, 0) translate(-50%, -50%) scale(${sx.toFixed(3)}, ${sy.toFixed(3)}) rotate(${rot.toFixed(1)}deg)`;
+    }
+  }, []);
+
+  // Measure river container width & height for pad density + pixel-accurate GPU transforms
+  useEffect(() => {
+    const updateSize = (w: number, h: number) => {
+      if (w > 0) {
+        riverSizeRef.current.width = w;
+        const nextCount = getPadsPerLaneForWidth(w);
+        setPadsPerLane((prev) => (prev === nextCount ? prev : nextCount));
+      }
+      if (h > 0) {
+        riverSizeRef.current.height = h;
+      }
+      syncTransformsToDom();
     };
 
-    const el = containerRef.current;
-    if (el && typeof ResizeObserver !== 'undefined') {
-      updateWidth(el.clientWidth);
+    const riverEl = riverAreaRef.current;
+    const outerEl = containerRef.current;
+    if (riverEl && typeof ResizeObserver !== 'undefined') {
+      updateSize(riverEl.clientWidth, riverEl.clientHeight);
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
-          updateWidth(entry.contentRect.width);
+          updateSize(entry.contentRect.width, entry.contentRect.height);
         }
       });
-      observer.observe(el);
+      observer.observe(riverEl);
       return () => observer.disconnect();
     }
 
-    const onResize = () => updateWidth(window.innerWidth);
+    const onResize = () => {
+      const w = outerEl ? outerEl.clientWidth : window.innerWidth;
+      const h = riverEl ? riverEl.clientHeight : Math.max(360, window.innerHeight - 220);
+      updateSize(w, h);
+    };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, []);
+  }, [syncTransformsToDom]);
 
   // Visible state for rendering
   const [pads, setPads] = useState<LilyPad[]>([]);
@@ -714,7 +792,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     }
   }, []);
 
-  // Main 60fps Physics & Drift Loop
+  // Main 60fps Physics & Drift Loop (GPU-composited direct transforms — ZERO React re-renders during smooth motion!)
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
@@ -727,6 +805,9 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         const curFrog = frogRef.current;
         const currentPads = padsRef.current;
         const voiceDriftScale = isVoiceMode ? 0.72 : 1.0;
+
+        let padsDirty = false;
+        let frogDirty = false;
 
         // Check if child is actively typing the next target word so we pause sinking gracefully
         const activeTargetPad = targetPadIdRef.current
@@ -743,6 +824,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           if (pad.direction === 1 && pad.x > 112) {
             pad.x = -12;
             resetPadFresh(pad);
+            padsDirty = true;
             if (targetPadIdRef.current === pad.id) {
               targetPadIdRef.current = null;
               setTargetPadId(null);
@@ -750,6 +832,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           } else if (pad.direction === -1 && pad.x < -12) {
             pad.x = 112;
             resetPadFresh(pad);
+            padsDirty = true;
             if (targetPadIdRef.current === pad.id) {
               targetPadIdRef.current = null;
               setTargetPadId(null);
@@ -762,8 +845,13 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           // - Gentler sinking rate in Normal mode (0.028/s vs 0.11/s in Hard)
           if (curFrog.currentPadId === pad.id && settings.difficulty !== 'easy') {
             if (!isVoiceMode && !isActivelyTyping) {
+              const prevBubbles = pad.isSinking && pad.sinkTimer > 0.4;
               pad.isSinking = true;
               pad.sinkTimer += dt * (settings.difficulty === 'hard' ? 0.11 : 0.028);
+              const nextBubbles = pad.isSinking && pad.sinkTimer > 0.4;
+              if (prevBubbles !== nextBubbles) {
+                padsDirty = true;
+              }
             }
           }
         }
@@ -772,6 +860,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         if (curFrog.status === 'jumping') {
           const nextProgress = curFrog.jumpProgress + dt * 2.8;
           if (nextProgress >= 1) {
+            frogDirty = true;
             if (curFrog.currentLane > TOTAL_LANES) {
               soundEngine.playReachBank();
               onFrogReachBank();
@@ -803,8 +892,10 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                   };
                   frogRef.current = newFrog;
                   setActiveFrog(newFrog);
+                  setPads([...padsRef.current]);
                   targetPadIdRef.current = null;
                   setTargetPadId(null);
+                  syncTransformsToDom();
                 }, 420);
               }
 
@@ -846,6 +937,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
               soundEngine.playSplash();
               onFrogLost();
               curFrog.status = 'drowning';
+              frogDirty = true;
 
               setTimeout(() => {
                 sanitizeAllPadsForNewFrog();
@@ -863,8 +955,10 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                 };
                 frogRef.current = respawnFrog;
                 setActiveFrog(respawnFrog);
+                setPads([...padsRef.current]);
                 targetPadIdRef.current = null;
                 setTargetPadId(null);
+                syncTransformsToDom();
               }, 800);
             }
           }
@@ -882,21 +976,32 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                 onWordSeenRef.current?.(validTarget.word.word);
               }
               const nextChar = validTarget.word.word[validTarget.typedLength] || null;
-              onNextCharChange(nextChar);
+              reportNextChar(nextChar);
             } else {
-              onNextCharChange(null);
+              reportNextChar(null);
             }
           } else {
-            onNextCharChange(' ');
+            reportNextChar(' ');
           }
         }
 
         for (let i = 0; i < currentPads.length; i++) {
-          currentPads[i].isTarget = currentPads[i].id === targetPadIdRef.current;
+          const shouldBeTarget = currentPads[i].id === targetPadIdRef.current;
+          if (currentPads[i].isTarget !== shouldBeTarget) {
+            currentPads[i].isTarget = shouldBeTarget;
+            padsDirty = true;
+          }
         }
 
-        setPads([...currentPads]);
-        setActiveFrog({ ...curFrog });
+        // Update GPU transforms directly at 60fps — ZERO React re-renders on normal drift/jump frames!
+        syncTransformsToDom();
+
+        if (padsDirty) {
+          setPads([...currentPads]);
+        }
+        if (frogDirty) {
+          setActiveFrog({ ...curFrog });
+        }
       }
 
       animId = requestAnimationFrame(loop);
@@ -909,13 +1014,14 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     isVoiceMode,
     onFrogLost,
     onFrogReachBank,
-    onNextCharChange,
     onVictory,
+    reportNextChar,
     resetPadFresh,
     sanitizeAllPadsForNewFrog,
     settings.difficulty,
     settings.totalFrogsPerRound,
-    settings.ttsEnabled
+    settings.ttsEnabled,
+    syncTransformsToDom
   ]);
 
   const activeTargetPad = targetPadId ? pads.find((p) => p.id === targetPadId) ?? null : null;
@@ -997,7 +1103,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       </div>
 
       {/* RIVER PLAY AREA (4 Evenly Spaced Floating Lanes) */}
-      <div className="relative w-full flex-1 min-h-0">
+      <div ref={riverAreaRef} className="relative w-full flex-1 min-h-0">
         {[4, 3, 2, 1].map((lane) => {
           const lanePads = pads.filter((p) => p.lane === lane);
           const topPercent = LANE_Y[lane];
@@ -1014,8 +1120,22 @@ export const RiverGame: React.FC<RiverGameProps> = ({
               {lanePads.map((pad) => (
                 <LilyPadView
                   key={pad.id}
-                  pad={pad}
+                  padId={pad.id}
+                  wordText={pad.word.word}
+                  chinese={pad.word.chinese}
+                  typedLength={pad.typedLength}
+                  isTarget={pad.isTarget}
+                  hasFlower={Boolean(pad.hasFlower)}
+                  showSinkBubbles={pad.isSinking && pad.sinkTimer > 0.4}
                   showChinese={settings.showChinesePrompt}
+                  initialLeftPx={(pad.x / 100) * riverSizeRef.current.width}
+                  innerRef={(el) => {
+                    if (el) {
+                      padDomRefs.current.set(pad.id, el);
+                    } else {
+                      padDomRefs.current.delete(pad.id);
+                    }
+                  }}
                   onSelect={() => {
                     // Only allow selecting pads in the immediate next lane!
                     const nextLane = frogRef.current.currentLane + 1;
@@ -1025,7 +1145,11 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                     }
                     targetPadIdRef.current = pad.id;
                     setTargetPadId(pad.id);
-                    onNextCharChange(pad.word.word[pad.typedLength] || null);
+                    for (let i = 0; i < padsRef.current.length; i++) {
+                      padsRef.current[i].isTarget = padsRef.current[i].id === pad.id;
+                    }
+                    setPads([...padsRef.current]);
+                    reportNextChar(pad.word.word[pad.typedLength] || null);
                     if (isVoiceMode) {
                       voiceRecognitionEngine.suppressFor(1400);
                       speechEngine.speak(pad.word.word, true);
@@ -1055,7 +1179,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         {isFinalLeapReady && (
           <button
             onClick={handleFinalLeap}
-            className="absolute top-[2%] left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-5 sm:px-6 py-2 sm:py-2.5 rounded-full bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 text-slate-950 font-black text-xs sm:text-sm lg:text-base animate-bounce shadow-[0_6px_24px_rgba(251,191,36,0.65)] border-2 border-white cursor-pointer hover:scale-105 active:scale-95 transition whitespace-nowrap"
+            className="absolute top-[2%] left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-4 sm:px-6 py-1.5 sm:py-2.5 rounded-full bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 text-slate-950 font-black text-xs sm:text-sm lg:text-base animate-bounce shadow-[0_6px_24px_rgba(251,191,36,0.65)] border-2 border-white cursor-pointer hover:scale-105 active:scale-95 transition whitespace-nowrap"
           >
             <span>
               {isVoiceMode
@@ -1065,33 +1189,42 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           </button>
         )}
 
+        {/* Friendly one-tap Voice Start Pill when Voice Mode is idle on first load */}
+        {isVoiceMode && voiceStatus === 'idle' && !voiceMicActive && !isFinalLeapReady && !voiceError && (
+          <button
+            onClick={handleToggleVoiceMic}
+            className="absolute bottom-[10%] left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-gradient-to-r from-amber-400 via-orange-300 to-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm shadow-[0_6px_20px_rgba(251,191,36,0.55)] border-2 border-white/90 cursor-pointer hover:scale-105 active:scale-95 transition whitespace-nowrap"
+          >
+            <span>🎙️ 点此开启语音闯关，读对单词小青蛙就跳！</span>
+          </button>
+        )}
+
         {/* Starting Dock Lotus Leaf at bottom center */}
         <div
           className="absolute left-1/2 -translate-x-1/2 bottom-0 translate-y-[20%] w-24 sm:w-28 h-10 sm:h-12 rounded-full bg-gradient-to-b from-emerald-400 to-emerald-600 border-2 border-emerald-700/70 shadow-md pointer-events-none z-10 opacity-90"
         />
 
-        {/* ACTIVE FROG */}
+        {/* ACTIVE FROG (GPU-composited direct transform for butter-smooth 60fps arcs!) */}
         <div
+          ref={frogDomRef}
           onClick={handleFinalLeap}
-          className={`absolute z-30 transition-transform ${
-            activeFrog.currentLane === TOTAL_LANES ? 'cursor-pointer hover:scale-110 active:scale-95' : ''
+          className={`absolute top-0 left-0 z-30 will-change-transform ${
+            activeFrog.currentLane === TOTAL_LANES ? 'cursor-pointer' : ''
           }`}
           style={{
-            left: `${activeFrog.x}%`,
-            top: `${activeFrog.y}%`,
-            transform: 'translate(-50%, -50%)',
+            transform: `translate3d(${((activeFrog.x / 100) * riverSizeRef.current.width).toFixed(1)}px, ${((activeFrog.y / 100) * riverSizeRef.current.height).toFixed(1)}px, 0) translate(-50%, -50%)`,
           }}
         >
           <FrogCharacter
             status={activeFrog.status}
-            size={activeFrog.status === 'jumping' ? 74 : 62}
-            jumpProgress={activeFrog.jumpProgress}
+            size={activeFrog.status === 'jumping' ? 72 : 62}
+            jumpProgress={0}
           />
         </div>
       </div>
 
       {/* BOTTOM STARTING BANK (出发跳台) */}
-      <div className="relative w-full h-[46px] sm:h-[54px] lg:h-[60px] shrink-0 bg-gradient-to-t from-emerald-800 via-emerald-700 to-emerald-600 border-t-4 border-emerald-500/70 shadow-2xl px-3 sm:px-6 lg:px-8 flex items-center justify-between z-10">
+      <div className="relative w-full h-[40px] sm:h-[52px] lg:h-[58px] shrink-0 bg-gradient-to-t from-emerald-800 via-emerald-700 to-emerald-600 border-t-4 border-emerald-500/70 shadow-2xl px-2.5 sm:px-6 lg:px-8 flex items-center justify-between z-10">
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="flex items-center gap-1.5 bg-emerald-900/80 px-2.5 sm:px-3 py-1 rounded-xl border border-emerald-400/40 text-xs font-bold text-emerald-100 shadow-sm">
             <span>🌿 出发跳台</span>
