@@ -305,8 +305,14 @@ class VoiceRecognitionEngine {
 
     try {
       if (this.recognition) {
+        const oldRec = this.recognition;
+        oldRec.onstart = null;
+        oldRec.onend = null;
+        oldRec.onerror = null;
+        oldRec.onresult = null;
+        this.recognition = null;
         try {
-          this.recognition.abort();
+          oldRec.abort();
         } catch {
           // Ignore abort errors
         }
@@ -319,10 +325,12 @@ class VoiceRecognitionEngine {
       rec.maxAlternatives = 5;
 
       rec.onstart = () => {
+        if (this.recognition !== rec) return;
         this.setStatus('listening');
       };
 
       rec.onresult = (event: SpeechRecognitionEventLike) => {
+        if (this.recognition !== rec) return;
         if (Date.now() < this.suppressedUntil) {
           return;
         }
@@ -341,6 +349,7 @@ class VoiceRecognitionEngine {
       };
 
       rec.onerror = (event: SpeechRecognitionErrorEventLike) => {
+        if (this.recognition !== rec) return;
         if (event.error === 'no-speech' || event.error === 'aborted') {
           // Normal silence or intentional restart
           return;
@@ -366,9 +375,10 @@ class VoiceRecognitionEngine {
       };
 
       rec.onend = () => {
+        if (this.recognition !== rec) return;
         if (this.shouldBeListening) {
           this.restartTimer = setTimeout(() => {
-            if (this.shouldBeListening) {
+            if (this.shouldBeListening && this.recognition === rec) {
               try {
                 rec.start();
               } catch {
@@ -384,7 +394,22 @@ class VoiceRecognitionEngine {
       };
 
       this.recognition = rec;
-      rec.start();
+      try {
+        rec.start();
+      } catch {
+        // Rapid unit-switch / restart: give the browser 180ms to finish tearing down the previous mic session
+        this.restartTimer = setTimeout(() => {
+          if (this.shouldBeListening && this.recognition === rec) {
+            try {
+              rec.start();
+            } catch {
+              this.shouldBeListening = false;
+              this.setStatus('error');
+              this.callbacks?.onError?.('启动语音识别失败，请点击麦克风按钮重新开启。');
+            }
+          }
+        }, 180);
+      }
     } catch {
       this.shouldBeListening = false;
       this.setStatus('error');
@@ -399,12 +424,17 @@ class VoiceRecognitionEngine {
       this.restartTimer = null;
     }
     if (this.recognition) {
+      const oldRec = this.recognition;
+      oldRec.onstart = null;
+      oldRec.onend = null;
+      oldRec.onerror = null;
+      oldRec.onresult = null;
+      this.recognition = null;
       try {
-        this.recognition.stop();
+        oldRec.stop();
       } catch {
         // Ignore stop error if not started
       }
-      this.recognition = null;
     }
     if (this.status !== 'unsupported') {
       this.setStatus('idle');

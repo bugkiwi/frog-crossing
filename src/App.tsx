@@ -126,6 +126,8 @@ export const App: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [gameKey, setGameKey] = useState(0); // increment to force restart river
   const [nextChar, setNextChar] = useState<string | null>(null);
+  // Persists across RiverGame remounts (next unit / restart) so microphone stays open once activated
+  const [voiceMicActive, setVoiceMicActive] = useState<boolean>(false);
 
   // Modals
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -204,14 +206,21 @@ export const App: React.FC = () => {
 
   const handleUpdateSettings = (partial: Partial<GameSettings>) => {
     setSettings((prev) => ({ ...prev, ...partial }));
+    if (partial.inputMode === 'voice') {
+      setVoiceMicActive(true);
+    } else if (partial.inputMode === 'typing') {
+      setVoiceMicActive(false);
+    }
   };
 
   const handleSetInputMode = useCallback((mode: GameInputMode) => {
     setSettings((prev) => ({ ...prev, inputMode: mode }));
+    setVoiceMicActive(mode === 'voice');
   }, []);
 
   const handleResetDefaults = () => {
     setSettings(DEFAULT_SETTINGS);
+    setVoiceMicActive(false);
   };
 
   // Restart Game (clears unfinished round progress in localStorage while preserving cumulative totalScore & word history)
@@ -443,6 +452,8 @@ export const App: React.FC = () => {
           onWordMistake={handleWordMistake}
           onOpenStats={() => setIsStatsOpen(true)}
           onSwitchInputMode={handleSetInputMode}
+          voiceMicActive={voiceMicActive}
+          onVoiceMicActiveChange={setVoiceMicActive}
         />
 
         {/* Pause Overlay */}

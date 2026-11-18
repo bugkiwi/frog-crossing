@@ -37,6 +37,8 @@ interface RiverGameProps {
   onWordMistake?: (word: string) => void;
   onOpenStats?: () => void;
   onSwitchInputMode?: (mode: GameInputMode) => void;
+  voiceMicActive?: boolean;
+  onVoiceMicActiveChange?: (active: boolean) => void;
 }
 
 interface FloatingPopup {
@@ -102,7 +104,9 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   onWordCompleted,
   onWordMistake,
   onOpenStats,
-  onSwitchInputMode
+  onSwitchInputMode,
+  voiceMicActive = false,
+  onVoiceMicActiveChange
 }) => {
   const safeInitialSaved = Math.min(Math.max(0, initialFrogsSaved), Math.max(0, settings.totalFrogsPerRound - 1));
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -118,9 +122,6 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   const [voiceHeard, setVoiceHeard] = useState<string>('');
   const [voiceFeedback, setVoiceFeedback] = useState<VoiceFeedback | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  // If the page cold-loaded already in voice mode, wait for a user gesture before requesting mic permission;
-  // if the user clicks "语音" to switch from typing -> voice, auto-start immediately!
-  const userMicPausedRef = useRef<boolean>(settings.inputMode === 'voice');
 
   // Measure river container width to adapt pad density cleanly across Mobile / iPad / Desktop / Ultrawide
   useEffect(() => {
@@ -659,7 +660,6 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       setVoiceHeard('');
       setVoiceFeedback(null);
       setVoiceError(null);
-      userMicPausedRef.current = false;
       return;
     }
 
@@ -669,9 +669,9 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       onError: (msg) => setVoiceError(msg)
     });
 
-    if (isPaused) {
+    if (isPaused || !voiceMicActive) {
       voiceRecognitionEngine.stop();
-    } else if (!userMicPausedRef.current) {
+    } else {
       voiceRecognitionEngine.start();
     }
 
@@ -679,19 +679,19 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       voiceRecognitionEngine.stop();
       voiceRecognitionEngine.setCallbacks(null);
     };
-  }, [isVoiceMode, isPaused, handleVoiceResult]);
+  }, [isVoiceMode, isPaused, voiceMicActive, handleVoiceResult]);
 
   const handleToggleVoiceMic = useCallback(() => {
     soundEngine.unlock();
     setVoiceError(null);
-    if (voiceStatus === 'listening') {
-      userMicPausedRef.current = true;
+    if (voiceStatus === 'listening' || voiceMicActive) {
+      onVoiceMicActiveChange?.(false);
       voiceRecognitionEngine.stop();
     } else {
-      userMicPausedRef.current = false;
+      onVoiceMicActiveChange?.(true);
       voiceRecognitionEngine.start();
     }
-  }, [voiceStatus]);
+  }, [voiceStatus, voiceMicActive, onVoiceMicActiveChange]);
 
   const handlePlayVoiceSample = useCallback(() => {
     const pad = padsRef.current.find((p) => p.id === targetPadIdRef.current);
