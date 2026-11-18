@@ -128,6 +128,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     height: typeof window !== 'undefined' ? Math.max(360, window.innerHeight - 220) : 600
   });
   const padDomRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const bankSlotRefs = useRef<(HTMLDivElement | null)[]>([]);
   const frogDomRef = useRef<HTMLDivElement | null>(null);
   const lastReportedNextCharRef = useRef<string | null | undefined>(undefined);
 
@@ -191,13 +192,22 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       let rot = 0;
       if (f.status === 'jumping') {
         const arc = Math.sin(f.jumpProgress * Math.PI);
-        sy = 1 + arc * 0.32;
-        sx = 1 - arc * 0.18;
-        rot = (f.jumpProgress - 0.5) * 18;
+        if (f.currentLane > TOTAL_LANES) {
+          // Final leap into the circular slot: soar and smoothly scale down to fit the exact slot!
+          const landScale = 1 - f.jumpProgress * 0.44;
+          sy = landScale * (1 + arc * 0.28);
+          sx = landScale * (1 - arc * 0.14);
+          rot = (f.jumpProgress - 0.5) * 22;
+        } else {
+          sy = 1 + arc * 0.32;
+          sx = 1 - arc * 0.18;
+          rot = (f.jumpProgress - 0.5) * 18;
+        }
       } else if (f.status === 'drowning') {
         sy = 0.72;
         sx = 0.9;
       }
+      frogEl.style.opacity = f.status === 'celebrating' ? '0' : '1';
       frogEl.style.transform = `translate3d(${fx.toFixed(1)}px, ${fy.toFixed(1)}px, 0) translate(-50%, -50%) scale(${sx.toFixed(3)}, ${sy.toFixed(3)}) rotate(${rot.toFixed(1)}deg)`;
     }
   }, []);
@@ -416,10 +426,28 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       let padId: string | null = null;
 
       if (isTopBank) {
-        targetX = Math.min(86, 22 + arrivedFrogsRef.current * 15);
-        targetY = LANE_Y[5];
+        // Compute exact center of the destination numbered slot (1..N) in the Top Destination Bank!
+        const slotIndex = arrivedFrogsRef.current;
+        const slotEl = bankSlotRefs.current[slotIndex];
+        const riverEl = riverAreaRef.current;
+        if (slotEl && riverEl) {
+          const slotRect = slotEl.getBoundingClientRect();
+          const riverRect = riverEl.getBoundingClientRect();
+          if (riverRect.width > 0 && riverRect.height > 0) {
+            const slotCenterX = slotRect.left + slotRect.width / 2 - riverRect.left;
+            const slotCenterY = slotRect.top + slotRect.height / 2 - riverRect.top;
+            targetX = (slotCenterX / riverRect.width) * 100;
+            targetY = (slotCenterY / riverRect.height) * 100;
+          } else {
+            targetX = Math.min(92, 68 + slotIndex * 6);
+            targetY = LANE_Y[5];
+          }
+        } else {
+          targetX = Math.min(92, 68 + slotIndex * 6);
+          targetY = LANE_Y[5];
+        }
         padId = null;
-        spawnPopup(curFrog.x, 15, '成功上岸! 🎉', 'text-yellow-200');
+        spawnPopup(Math.min(88, Math.max(12, targetX)), 6, '成功上岸! 🎉', 'text-yellow-200');
       } else if (targetPad) {
         targetX = targetPad.x;
         targetY = LANE_Y[targetPad.lane];
@@ -858,7 +886,8 @@ export const RiverGame: React.FC<RiverGameProps> = ({
 
         // 2. Update Frog Physics
         if (curFrog.status === 'jumping') {
-          const nextProgress = curFrog.jumpProgress + dt * 2.8;
+          const jumpRate = curFrog.currentLane > TOTAL_LANES ? 2.25 : 2.8;
+          const nextProgress = curFrog.jumpProgress + dt * jumpRate;
           if (nextProgress >= 1) {
             frogDirty = true;
             if (curFrog.currentLane > TOTAL_LANES) {
@@ -1081,29 +1110,43 @@ export const RiverGame: React.FC<RiverGameProps> = ({
 
         {/* Resting lotus slots for rescued frogs */}
         <div className="relative flex items-center gap-1.5 sm:gap-2.5 lg:gap-3 z-10">
-          {Array.from({ length: settings.totalFrogsPerRound }).map((_, idx) => (
-            <div
-              key={idx}
-              className={`w-8 h-8 sm:w-11 sm:h-11 lg:w-12 lg:h-12 rounded-full border-2 flex items-center justify-center relative shadow-inner transition-all ${
-                idx < arrivedFrogs
-                  ? 'bg-emerald-400/35 border-amber-300 shadow-[0_0_12px_rgba(253,224,71,0.45)]'
-                  : 'bg-emerald-800/70 border-emerald-300/40'
-              }`}
-            >
-              {idx < arrivedFrogs ? (
-                <div className="animate-bounce">
-                  <FrogCharacter status="celebrating" size={34} />
-                </div>
-              ) : (
-                <span className="text-[11px] sm:text-xs text-emerald-200/50 font-mono font-bold">{idx + 1}</span>
-              )}
-            </div>
-          ))}
+          {Array.from({ length: settings.totalFrogsPerRound }).map((_, idx) => {
+            const isNextDestination = idx === arrivedFrogs && isFinalLeapReady;
+            return (
+              <div
+                key={idx}
+                ref={(el) => {
+                  bankSlotRefs.current[idx] = el;
+                }}
+                className={`w-8 h-8 sm:w-11 sm:h-11 lg:w-12 lg:h-12 rounded-full border-2 flex items-center justify-center relative shadow-inner transition-all ${
+                  idx < arrivedFrogs
+                    ? 'bg-emerald-400/35 border-amber-300 shadow-[0_0_12px_rgba(253,224,71,0.45)]'
+                    : isNextDestination
+                    ? 'bg-amber-400/25 border-amber-300 ring-2 ring-amber-200/90 shadow-[0_0_16px_rgba(251,191,36,0.75)] animate-pulse'
+                    : 'bg-emerald-800/70 border-emerald-300/40'
+                }`}
+              >
+                {idx < arrivedFrogs ? (
+                  <div className="animate-bounce">
+                    <FrogCharacter status="celebrating" size={34} />
+                  </div>
+                ) : (
+                  <span
+                    className={`text-[11px] sm:text-xs font-mono font-bold ${
+                      isNextDestination ? 'text-amber-200' : 'text-emerald-200/50'
+                    }`}
+                  >
+                    {idx + 1}
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* RIVER PLAY AREA (4 Evenly Spaced Floating Lanes) */}
-      <div ref={riverAreaRef} className="relative w-full flex-1 min-h-0">
+      {/* RIVER PLAY AREA (4 Evenly Spaced Floating Lanes; z-20 lets final leap soar cleanly into top bank slots!) */}
+      <div ref={riverAreaRef} className="relative w-full flex-1 min-h-0 z-20">
         {[4, 3, 2, 1].map((lane) => {
           const lanePads = pads.filter((p) => p.lane === lane);
           const topPercent = LANE_Y[lane];
@@ -1210,7 +1253,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           onClick={handleFinalLeap}
           className={`absolute top-0 left-0 z-30 will-change-transform ${
             activeFrog.currentLane === TOTAL_LANES ? 'cursor-pointer' : ''
-          }`}
+          } ${activeFrog.status === 'celebrating' ? 'opacity-0 pointer-events-none' : ''}`}
           style={{
             transform: `translate3d(${((activeFrog.x / 100) * riverSizeRef.current.width).toFixed(1)}px, ${((activeFrog.y / 100) * riverSizeRef.current.height).toFixed(1)}px, 0) translate(-50%, -50%)`,
           }}
