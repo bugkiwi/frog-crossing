@@ -5,6 +5,7 @@ import { Volume2, VolumeX, Mic, MicOff, BookOpen, Settings, RotateCcw, Pause, Pl
 interface TopNavBarProps {
   currentCourse: UnitCourse;
   score: number;
+  totalScore: number;
   combo: number;
   frogsSaved: number;
   totalFrogs: number;
@@ -22,6 +23,7 @@ interface TopNavBarProps {
 export const TopNavBar: React.FC<TopNavBarProps> = ({
   currentCourse,
   score,
+  totalScore,
   combo,
   frogsSaved,
   totalFrogs,
@@ -91,12 +93,23 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
           </div>
         </div>
 
-        {/* Score & Combo */}
+        {/* Score, Total Score & Combo */}
         <div className="flex items-center gap-1.5">
-          <div className="flex items-center gap-1 bg-amber-500/20 border border-amber-400/50 text-amber-200 px-2 sm:px-2.5 py-1 rounded-xl font-bold text-xs sm:text-sm shadow-inner">
+          <div
+            className="flex items-center gap-1 bg-amber-500/20 border border-amber-400/50 text-amber-200 px-2 sm:px-2.5 py-1 rounded-xl font-bold text-xs sm:text-sm shadow-inner"
+            title={`本局得分: ${score} | 累计总积分: ${totalScore}`}
+          >
             <Sparkles className="w-3.5 h-3.5 text-amber-400 hidden sm:inline" />
             <span className="text-[11px] sm:text-xs text-amber-300">得分:</span>
             <span className="font-extrabold text-amber-300 font-mono">{score}</span>
+          </div>
+
+          <div
+            className="hidden xl:flex items-center gap-1 bg-emerald-800/70 border border-emerald-500/40 text-emerald-200 px-2.5 py-1 rounded-xl font-bold text-xs shadow-inner"
+            title="本地已累计保存的历史总积分（每过河一只青蛙自动刷新保存）"
+          >
+            <span className="text-emerald-300/90">🏆 总积分:</span>
+            <span className="font-extrabold text-yellow-200 font-mono">{totalScore}</span>
           </div>
 
           {combo > 1 && (

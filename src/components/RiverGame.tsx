@@ -9,6 +9,7 @@ interface RiverGameProps {
   currentCourse: UnitCourse;
   settings: GameSettings;
   isPaused: boolean;
+  initialFrogsSaved?: number;
   onUpdateStats: (statsUpdater: (prev: GameStats) => GameStats) => void;
   onVictory: () => void;
   onGameOver: () => void;
@@ -51,6 +52,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   currentCourse,
   settings,
   isPaused,
+  initialFrogsSaved = 0,
   onUpdateStats,
   onVictory,
   onGameOver,
@@ -58,6 +60,8 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   onFrogReachBank,
   onFrogLost
 }) => {
+  const safeInitialSaved = Math.min(Math.max(0, initialFrogsSaved), Math.max(0, settings.totalFrogsPerRound - 1));
+
   // Visible state for rendering
   const [pads, setPads] = useState<LilyPad[]>([]);
   const [activeFrog, setActiveFrog] = useState<ActiveFrog>({
@@ -73,8 +77,10 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     targetY: LANE_Y[0]
   });
 
-  const [waitingFrogs, setWaitingFrogs] = useState<number>(settings.totalFrogsPerRound - 1);
-  const [arrivedFrogs, setArrivedFrogs] = useState<number>(0);
+  const [waitingFrogs, setWaitingFrogs] = useState<number>(
+    Math.max(0, settings.totalFrogsPerRound - safeInitialSaved - 1)
+  );
+  const [arrivedFrogs, setArrivedFrogs] = useState<number>(safeInitialSaved);
   const [targetPadId, setTargetPadId] = useState<string | null>(null);
   const [popups, setPopups] = useState<FloatingPopup[]>([]);
 
@@ -84,9 +90,13 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   const targetPadIdRef = useRef<string | null>(null);
   const wordIndexRef = useRef<number>(0);
   const isPausedRef = useRef<boolean>(isPaused);
+  const waitingFrogsRef = useRef<number>(waitingFrogs);
+  const arrivedFrogsRef = useRef<number>(arrivedFrogs);
 
   isPausedRef.current = isPaused;
   targetPadIdRef.current = targetPadId;
+  waitingFrogsRef.current = waitingFrogs;
+  arrivedFrogsRef.current = arrivedFrogs;
 
   const spawnPopup = useCallback((x: number, y: number, text: string, color: string = 'text-amber-300') => {
     const id = `pop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -106,6 +116,34 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     wordIndexRef.current++;
     return word;
   }, [currentCourse]);
+
+  // Helper: Reset a pad to a clean, un-typed state with a fresh word
+  const resetPadFresh = useCallback(
+    (pad: LilyPad) => {
+      pad.word = getNextWord();
+      pad.typedLength = 0;
+      pad.isSinking = false;
+      pad.sinkTimer = 0;
+      pad.isTarget = false;
+    },
+    [getNextWord]
+  );
+
+  // Helper: Clean up any completed/sinking pads whenever a new frog starts from Lane 0
+  const sanitizeAllPadsForNewFrog = useCallback(() => {
+    const currentPads = padsRef.current;
+    for (let i = 0; i < currentPads.length; i++) {
+      const p = currentPads[i];
+      if (p.typedLength > 0 || p.isSinking || p.sinkTimer > 0) {
+        if (p.typedLength >= p.word.word.length) {
+          p.word = getNextWord();
+        }
+        p.typedLength = 0;
+        p.isSinking = false;
+        p.sinkTimer = 0;
+      }
+    }
+  }, [getNextWord]);
 
   // Spawn initial staggered river lily pads
   useEffect(() => {
@@ -156,11 +194,16 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     frogRef.current = initialFrog;
     setActiveFrog(initialFrog);
 
-    setWaitingFrogs(settings.totalFrogsPerRound - 1);
-    setArrivedFrogs(0);
+    const saved = Math.min(Math.max(0, initialFrogsSaved), Math.max(0, settings.totalFrogsPerRound - 1));
+    const waiting = Math.max(0, settings.totalFrogsPerRound - saved - 1);
+    setArrivedFrogs(saved);
+    arrivedFrogsRef.current = saved;
+    setWaitingFrogs(waiting);
+    waitingFrogsRef.current = waiting;
     setTargetPadId(null);
+    targetPadIdRef.current = null;
     setPopups([]);
-  }, [currentCourse, settings.difficulty, settings.totalFrogsPerRound, getNextWord]);
+  }, [currentCourse, settings.difficulty, settings.totalFrogsPerRound, initialFrogsSaved, getNextWord]);
 
   // Jump Frog Action
   const jumpFrogTo = useCallback(
@@ -172,13 +215,21 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       const startX = curFrog.x;
       const startY = curFrog.y;
 
+      // Immediately refresh the pad the frog is jumping AWAY from so it's never left in a stale completed state
+      if (curFrog.currentPadId) {
+        const prevPad = padsRef.current.find((p) => p.id === curFrog.currentPadId);
+        if (prevPad && (!targetPad || prevPad.id !== targetPad.id)) {
+          resetPadFresh(prevPad);
+        }
+      }
+
       const nextLane = curFrog.currentLane + 1;
       let targetX = 50;
       let targetY = LANE_Y[nextLane] ?? LANE_Y[5];
       let padId: string | null = null;
 
       if (isTopBank) {
-        targetX = Math.min(86, 22 + arrivedFrogs * 15);
+        targetX = Math.min(86, 22 + arrivedFrogsRef.current * 15);
         targetY = LANE_Y[5];
         padId = null;
         spawnPopup(curFrog.x, 15, '成功上岸! 🎉', 'text-yellow-200');
@@ -205,9 +256,50 @@ export const RiverGame: React.FC<RiverGameProps> = ({
 
       frogRef.current = nextFrogState;
       setActiveFrog(nextFrogState);
+      targetPadIdRef.current = null;
       setTargetPadId(null);
     },
-    [arrivedFrogs, spawnPopup]
+    [resetPadFresh, spawnPopup]
+  );
+
+  // Helper: Guarantee a valid, uncompleted target pad in nextLane
+  const ensureValidTargetInLane = useCallback(
+    (nextLane: number, frogX: number): LilyPad | null => {
+      const currentPads = padsRef.current;
+
+      // Defensive sanitization: no pad in nextLane should ever remain completed (typedLength >= word.length)
+      for (let i = 0; i < currentPads.length; i++) {
+        const p = currentPads[i];
+        if (p.lane === nextLane && p.id !== frogRef.current.currentPadId && p.typedLength >= p.word.word.length) {
+          resetPadFresh(p);
+        }
+      }
+
+      let currentTarget = currentPads.find(
+        (p) => p.id === targetPadIdRef.current && p.lane === nextLane && p.typedLength < p.word.word.length
+      );
+
+      // Re-pick if current target drifted near/off edge while untouched
+      if (currentTarget && currentTarget.typedLength === 0 && (currentTarget.x < 8 || currentTarget.x > 92)) {
+        currentTarget = undefined;
+      }
+
+      if (!currentTarget) {
+        const lanePads = currentPads.filter((p) => p.lane === nextLane && p.typedLength < p.word.word.length);
+        const visibleLanePads = lanePads.filter((p) => p.x >= 10 && p.x <= 90);
+        const pool = visibleLanePads.length > 0 ? visibleLanePads : lanePads;
+        if (pool.length > 0) {
+          currentTarget = pool.reduce((prev, curr) =>
+            Math.abs(curr.x - frogX) < Math.abs(prev.x - frogX) ? curr : prev
+          );
+          targetPadIdRef.current = currentTarget.id;
+          setTargetPadId(currentTarget.id);
+        }
+      }
+
+      return currentTarget ?? null;
+    },
+    [resetPadFresh]
   );
 
   // Process Keystroke Input
@@ -215,7 +307,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     (keyChar: string) => {
       if (isPausedRef.current) return;
       const curFrog = frogRef.current;
-      if (curFrog.status === 'jumping' || curFrog.status === 'drowning') return;
+      if (curFrog.status === 'jumping' || curFrog.status === 'drowning' || curFrog.status === 'celebrating') return;
 
       soundEngine.unlock();
 
@@ -235,44 +327,35 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         return;
       }
 
-      // Looking for target pad in next lane
-      const currentPads = padsRef.current;
-      let currentTarget = currentPads.find((p) => p.id === targetPadIdRef.current);
+      // Ensure we have a valid target pad in nextLane
+      let currentTarget = ensureValidTargetInLane(nextLane, curFrog.x);
 
-      // Check if user typed the first letter of another leaf in that lane
-      const otherMatchingPad = currentPads.find(
+      // Check if user typed the first letter of another visible leaf in nextLane
+      const otherMatchingPad = padsRef.current.find(
         (p) =>
           p.lane === nextLane &&
           p.id !== targetPadIdRef.current &&
-          p.word.word[0].toLowerCase() === keyChar.toLowerCase()
+          p.x >= 4 &&
+          p.x <= 96 &&
+          p.typedLength === 0 &&
+          p.word.word[0]?.toLowerCase() === keyChar.toLowerCase()
       );
 
       if (
         (!currentTarget || currentTarget.typedLength === 0) &&
         otherMatchingPad &&
-        (!currentTarget || currentTarget.word.word[0].toLowerCase() !== keyChar.toLowerCase())
+        (!currentTarget || currentTarget.word.word[0]?.toLowerCase() !== keyChar.toLowerCase())
       ) {
         currentTarget = otherMatchingPad;
         targetPadIdRef.current = otherMatchingPad.id;
         setTargetPadId(otherMatchingPad.id);
       }
 
-      if (!currentTarget) {
-        const lanePads = currentPads.filter((p) => p.lane === nextLane);
-        if (lanePads.length > 0) {
-          currentTarget = lanePads.reduce((prev, curr) =>
-            Math.abs(curr.x - curFrog.x) < Math.abs(prev.x - curFrog.x) ? curr : prev
-          );
-          targetPadIdRef.current = currentTarget.id;
-          setTargetPadId(currentTarget.id);
-        }
-      }
-
       if (!currentTarget) return;
 
       const expectedChar = currentTarget.word.word[currentTarget.typedLength]?.toLowerCase();
 
-      if (keyChar.toLowerCase() === expectedChar) {
+      if (expectedChar && keyChar.toLowerCase() === expectedChar) {
         const nextTyped = currentTarget.typedLength + 1;
         currentTarget.typedLength = nextTyped;
 
@@ -310,7 +393,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         }));
       }
     },
-    [jumpFrogTo, onNextCharChange, onUpdateStats]
+    [ensureValidTargetInLane, jumpFrogTo, onNextCharChange, onUpdateStats]
   );
 
   // Global keydown listener
@@ -379,16 +462,18 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           // Wrap around screen edges
           if (pad.direction === 1 && pad.x > 112) {
             pad.x = -12;
-            pad.word = getNextWord();
-            pad.typedLength = 0;
-            pad.sinkTimer = 0;
-            pad.isSinking = false;
+            resetPadFresh(pad);
+            if (targetPadIdRef.current === pad.id) {
+              targetPadIdRef.current = null;
+              setTargetPadId(null);
+            }
           } else if (pad.direction === -1 && pad.x < -12) {
             pad.x = 112;
-            pad.word = getNextWord();
-            pad.typedLength = 0;
-            pad.sinkTimer = 0;
-            pad.isSinking = false;
+            resetPadFresh(pad);
+            if (targetPadIdRef.current === pad.id) {
+              targetPadIdRef.current = null;
+              setTargetPadId(null);
+            }
           }
 
           // Sinking logic when frog is standing on it
@@ -406,17 +491,19 @@ export const RiverGame: React.FC<RiverGameProps> = ({
               soundEngine.playReachBank();
               onFrogReachBank();
 
-              setArrivedFrogs((prev) => {
-                const nextCount = prev + 1;
-                if (nextCount >= settings.totalFrogsPerRound) {
-                  setTimeout(() => onVictory(), 500);
-                }
-                return nextCount;
-              });
+              const nextArrived = arrivedFrogsRef.current + 1;
+              arrivedFrogsRef.current = nextArrived;
+              setArrivedFrogs(nextArrived);
 
-              if (waitingFrogs > 0) {
-                setWaitingFrogs((prev) => prev - 1);
+              if (nextArrived >= settings.totalFrogsPerRound) {
+                setTimeout(() => onVictory(), 500);
+              } else if (waitingFrogsRef.current > 0) {
+                const nextWaiting = waitingFrogsRef.current - 1;
+                waitingFrogsRef.current = nextWaiting;
+                setWaitingFrogs(nextWaiting);
+
                 setTimeout(() => {
+                  sanitizeAllPadsForNewFrog();
                   const newFrog: ActiveFrog = {
                     currentLane: 0,
                     currentPadId: null,
@@ -431,6 +518,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                   };
                   frogRef.current = newFrog;
                   setActiveFrog(newFrog);
+                  targetPadIdRef.current = null;
                   setTargetPadId(null);
                 }, 420);
               }
@@ -472,6 +560,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
               curFrog.status = 'drowning';
 
               setTimeout(() => {
+                sanitizeAllPadsForNewFrog();
                 const respawnFrog: ActiveFrog = {
                   currentLane: 0,
                   currentPadId: null,
@@ -486,38 +575,27 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                 };
                 frogRef.current = respawnFrog;
                 setActiveFrog(respawnFrog);
+                targetPadIdRef.current = null;
                 setTargetPadId(null);
               }, 800);
             }
           }
         }
 
-        // 3. Keep target pad and virtual keyboard in sync
-        const nextLane = curFrog.currentLane + 1;
-        if (nextLane <= TOTAL_LANES) {
-          let currentTarget = currentPads.find((p) => p.id === targetPadIdRef.current && p.lane === nextLane);
-          // Re-pick if current target drifted off visible play region while untouched
-          if (currentTarget && currentTarget.typedLength === 0 && (currentTarget.x < 8 || currentTarget.x > 92)) {
-            currentTarget = undefined;
-          }
-          if (!currentTarget) {
-            const visibleLanePads = currentPads.filter((p) => p.lane === nextLane && p.x >= 10 && p.x <= 90);
-            const pool = visibleLanePads.length > 0 ? visibleLanePads : currentPads.filter((p) => p.lane === nextLane);
-            if (pool.length > 0) {
-              currentTarget = pool.reduce((prev, curr) =>
-                Math.abs(curr.x - curFrog.x) < Math.abs(prev.x - curFrog.x) ? curr : prev
-              );
-              targetPadIdRef.current = currentTarget.id;
-              setTargetPadId(currentTarget.id);
+        // 3. Keep target pad and virtual keyboard strictly in sync
+        if (curFrog.status === 'idle' || curFrog.status === 'sitting') {
+          const nextLane = curFrog.currentLane + 1;
+          if (nextLane <= TOTAL_LANES) {
+            const validTarget = ensureValidTargetInLane(nextLane, curFrog.x);
+            if (validTarget) {
+              const nextChar = validTarget.word.word[validTarget.typedLength] || null;
+              onNextCharChange(nextChar);
+            } else {
+              onNextCharChange(null);
             }
+          } else {
+            onNextCharChange(' ');
           }
-
-          if (currentTarget) {
-            const nextChar = currentTarget.word.word[currentTarget.typedLength] || null;
-            onNextCharChange(nextChar);
-          }
-        } else {
-          onNextCharChange(' ');
         }
 
         for (let i = 0; i < currentPads.length; i++) {
@@ -534,15 +612,16 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
   }, [
-    getNextWord,
+    ensureValidTargetInLane,
     onFrogLost,
     onFrogReachBank,
     onNextCharChange,
     onVictory,
+    resetPadFresh,
+    sanitizeAllPadsForNewFrog,
     settings.difficulty,
     settings.totalFrogsPerRound,
-    settings.ttsEnabled,
-    waitingFrogs
+    settings.ttsEnabled
   ]);
 
   return (
@@ -570,7 +649,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           activeFrog.currentLane === TOTAL_LANES ? 'cursor-pointer ring-4 ring-amber-300/90 animate-pulse' : ''
         }`}
       >
-        {/* Storybook distant rolling hills SVG silhouette (tribute to classic Kingsoft pond bank) */}
+        {/* Storybook distant rolling hills SVG silhouette */}
         <svg
           viewBox="0 0 1440 90"
           preserveAspectRatio="none"
@@ -638,8 +717,15 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                   pad={pad}
                   showChinese={settings.showChinesePrompt}
                   onSelect={() => {
+                    // Only allow selecting pads in the immediate next lane!
+                    const nextLane = frogRef.current.currentLane + 1;
+                    if (pad.lane !== nextLane) return;
+                    if (pad.typedLength >= pad.word.word.length) {
+                      resetPadFresh(pad);
+                    }
                     targetPadIdRef.current = pad.id;
                     setTargetPadId(pad.id);
+                    onNextCharChange(pad.word.word[pad.typedLength] || null);
                   }}
                 />
               ))}
@@ -661,7 +747,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           </div>
         ))}
 
-        {/* Lane 4 to Top Bank Leap Button (Works seamlessly on Desktop, iPad & Mobile) */}
+        {/* Lane 4 to Top Bank Leap Button */}
         {activeFrog.currentLane === TOTAL_LANES && activeFrog.status === 'sitting' && (
           <button
             onClick={handleFinalLeap}
@@ -671,7 +757,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
           </button>
         )}
 
-        {/* Starting Dock Lotus Leaf at bottom center (where Lane 0 frog sits) */}
+        {/* Starting Dock Lotus Leaf at bottom center */}
         <div
           className="absolute left-1/2 -translate-x-1/2 bottom-0 translate-y-[20%] w-24 sm:w-28 h-10 sm:h-12 rounded-full bg-gradient-to-b from-emerald-400 to-emerald-600 border-2 border-emerald-700/70 shadow-md pointer-events-none z-10 opacity-90"
         />

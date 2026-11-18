@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { UnitCourse, GameSettings, GameStats } from './types';
 import { BUILTIN_TEXTBOOKS } from './data/curriculumData';
 import { RiverGame } from './components/RiverGame';
@@ -10,6 +10,13 @@ import { VictoryModal } from './components/VictoryModal';
 import { GameOverModal } from './components/GameOverModal';
 import { soundEngine } from './services/soundEngine';
 import { speechEngine } from './services/speechEngine';
+import {
+  loadPersistedProgress,
+  recordFrogCrossed,
+  recordRoundVictory,
+  clearCurrentRoundProgress,
+  PersistedProgress
+} from './services/progressStorage';
 
 const DEFAULT_SETTINGS: GameSettings = {
   difficulty: 'normal',
@@ -23,45 +30,84 @@ const DEFAULT_SETTINGS: GameSettings = {
   driftSpeedMultiplier: 1.0
 };
 
+function loadInitialCustomCourses(): UnitCourse[] {
+  try {
+    const saved = localStorage.getItem('frog_crossing_custom_courses');
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadInitialSettings(): GameSettings {
+  try {
+    const saved = localStorage.getItem('frog_crossing_settings');
+    return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+function findCourseById(courseId: string, customCourses: UnitCourse[]): UnitCourse | null {
+  if (!courseId) return null;
+  const builtin = BUILTIN_TEXTBOOKS.flatMap((t) => t.units).find((u) => u.id === courseId);
+  if (builtin) return builtin;
+  return customCourses.find((c) => c.id === courseId) || null;
+}
+
 export const App: React.FC = () => {
-  // Course State: Default to 《新交际英语 二年级上册》 Unit 1
-  const [currentCourse, setCurrentCourse] = useState<UnitCourse>(() => {
-    return BUILTIN_TEXTBOOKS[0].units[0];
-  });
+  const initialCustomCourses = useRef<UnitCourse[]>(loadInitialCustomCourses());
+  const initialSettings = useRef<GameSettings>(loadInitialSettings());
+  const initialProgress = useRef<PersistedProgress>(loadPersistedProgress());
 
   // Custom Courses stored in LocalStorage
-  const [customCourses, setCustomCourses] = useState<UnitCourse[]>(() => {
-    try {
-      const saved = localStorage.getItem('frog_crossing_custom_courses');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [customCourses, setCustomCourses] = useState<UnitCourse[]>(initialCustomCourses.current);
 
   // Settings State
-  const [settings, setSettings] = useState<GameSettings>(() => {
-    try {
-      const saved = localStorage.getItem('frog_crossing_settings');
-      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
-    } catch {
-      return DEFAULT_SETTINGS;
-    }
+  const [settings, setSettings] = useState<GameSettings>(initialSettings.current);
+
+  // Course State: Restore last active course from localStorage, fallback to 《新交际英语 二年级上册》 Unit 1
+  const [currentCourse, setCurrentCourse] = useState<UnitCourse>(() => {
+    const restored = findCourseById(initialProgress.current.activeCourseId, initialCustomCourses.current);
+    return restored || BUILTIN_TEXTBOOKS[0].units[0];
   });
 
-  // Game Stats State
-  const [stats, setStats] = useState<GameStats>({
-    score: 0,
-    combo: 0,
-    maxCombo: 0,
-    correctKeystrokes: 0,
-    wrongKeystrokes: 0,
-    wordsCompleted: 0,
-    frogsSaved: 0,
-    frogsLost: 0,
+  // Check if there is a valid unfinished round in localStorage for the active course
+  const restoredRound =
+    initialProgress.current.currentRound &&
+    initialProgress.current.currentRound.courseId === currentCourse.id &&
+    initialProgress.current.currentRound.frogsSaved > 0 &&
+    initialProgress.current.currentRound.frogsSaved < initialSettings.current.totalFrogsPerRound
+      ? initialProgress.current.currentRound
+      : null;
+
+  const [initialFrogsSaved, setInitialFrogsSaved] = useState<number>(restoredRound?.frogsSaved ?? 0);
+  const [totalScore, setTotalScore] = useState<number>(initialProgress.current.totalScore);
+  const [saveToast, setSaveToast] = useState<string | null>(null);
+
+  // Game Stats State (restored from localStorage if mid-round)
+  const [stats, setStats] = useState<GameStats>(() => ({
+    score: restoredRound?.score ?? 0,
+    combo: restoredRound?.combo ?? 0,
+    maxCombo: restoredRound?.maxCombo ?? 0,
+    correctKeystrokes: restoredRound?.correctKeystrokes ?? 0,
+    wrongKeystrokes: restoredRound?.wrongKeystrokes ?? 0,
+    wordsCompleted: restoredRound?.wordsCompleted ?? 0,
+    frogsSaved: restoredRound?.frogsSaved ?? 0,
+    frogsLost: restoredRound?.frogsLost ?? 0,
     startTime: Date.now(),
     endTime: null
-  });
+  }));
+
+  // Refs for synchronous access during frog-crossing persistence
+  const statsRef = useRef<GameStats>(stats);
+  const currentCourseRef = useRef<UnitCourse>(currentCourse);
+  const settingsRef = useRef<GameSettings>(settings);
+  const lastSavedRoundScoreRef = useRef<number>(restoredRound?.score ?? 0);
+
+  statsRef.current = stats;
+  currentCourseRef.current = currentCourse;
+  settingsRef.current = settings;
 
   // Game Lifecycle States
   const [isPaused, setIsPaused] = useState(false);
@@ -83,6 +129,13 @@ export const App: React.FC = () => {
       localStorage.setItem('frog_crossing_settings', JSON.stringify(settings));
     } catch {}
   }, [settings]);
+
+  const showSavedToast = useCallback((msg: string) => {
+    setSaveToast(msg);
+    setTimeout(() => {
+      setSaveToast((curr) => (curr === msg ? null : curr));
+    }, 1800);
+  }, []);
 
   // Sync custom courses with storage
   const handleAddCustomCourse = (course: UnitCourse) => {
@@ -109,8 +162,12 @@ export const App: React.FC = () => {
     setSettings(DEFAULT_SETTINGS);
   };
 
-  // Restart Game
-  const handleRestart = useCallback(() => {
+  // Restart Game (clears unfinished round progress in localStorage while preserving cumulative totalScore)
+  const handleRestart = useCallback((targetCourseId?: string) => {
+    const courseId = targetCourseId ?? currentCourseRef.current.id;
+    clearCurrentRoundProgress(courseId);
+    lastSavedRoundScoreRef.current = 0;
+    setInitialFrogsSaved(0);
     setStats({
       score: 0,
       combo: 0,
@@ -132,22 +189,24 @@ export const App: React.FC = () => {
   // Course Switch
   const handleSelectCourse = (course: UnitCourse) => {
     setCurrentCourse(course);
-    handleRestart();
+    currentCourseRef.current = course;
+    handleRestart(course.id);
   };
 
   // Victory handler
-  const handleVictory = () => {
-    setStats((prev) => ({ ...prev, endTime: Date.now() }));
+  const handleVictory = useCallback(() => {
+    const finalStats: GameStats = { ...statsRef.current, endTime: Date.now() };
+    setStats(finalStats);
+    recordRoundVictory(currentCourseRef.current.id, finalStats);
     soundEngine.playVictoryFanfare();
     setIsVictoryOpen(true);
-  };
+  }, []);
 
-  // Frog lost handler (if all frogs lost or lost too many)
-  const handleFrogLost = () => {
+  // Frog lost handler
+  const handleFrogLost = useCallback(() => {
     setStats((prev) => {
       const lost = prev.frogsLost + 1;
-      // In hard or normal mode, if too many frogs lost, trigger game over
-      if (settings.difficulty === 'hard' && lost >= 3) {
+      if (settingsRef.current.difficulty === 'hard' && lost >= 3) {
         setTimeout(() => setIsGameOverOpen(true), 800);
       }
       return {
@@ -155,14 +214,30 @@ export const App: React.FC = () => {
         frogsLost: lost
       };
     });
-  };
+  }, []);
 
-  const handleFrogReachBank = () => {
-    setStats((prev) => ({
+  // Every time a frog jumps across and lands on the bank: immediately refresh score & progress in localStorage!
+  const handleFrogReachBank = useCallback(() => {
+    const prev = statsRef.current;
+    const nextStats: GameStats = {
       ...prev,
       frogsSaved: prev.frogsSaved + 1
-    }));
-  };
+    };
+    statsRef.current = nextStats;
+    setStats(nextStats);
+
+    const scoreDelta = Math.max(0, nextStats.score - lastSavedRoundScoreRef.current);
+    lastSavedRoundScoreRef.current = nextStats.score;
+
+    const persisted = recordFrogCrossed(
+      currentCourseRef.current.id,
+      nextStats,
+      settingsRef.current.totalFrogsPerRound,
+      scoreDelta
+    );
+    setTotalScore(persisted.totalScore);
+    showSavedToast(`💾 进度已保存 (${nextStats.frogsSaved}/${settingsRef.current.totalFrogsPerRound}) · 总积分 ${persisted.totalScore}`);
+  }, [showSavedToast]);
 
   // Find next unit in the same textbook
   const handleNextUnit = () => {
@@ -181,6 +256,7 @@ export const App: React.FC = () => {
       <TopNavBar
         currentCourse={currentCourse}
         score={stats.score}
+        totalScore={totalScore}
         combo={stats.combo}
         frogsSaved={stats.frogsSaved}
         totalFrogs={settings.totalFrogsPerRound}
@@ -188,12 +264,19 @@ export const App: React.FC = () => {
         isPaused={isPaused}
         settings={settings}
         onTogglePause={() => setIsPaused(!isPaused)}
-        onRestart={handleRestart}
+        onRestart={() => handleRestart()}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenCourseManager={() => setIsCourseManagerOpen(true)}
         onToggleSound={() => handleUpdateSettings({ sfxEnabled: !settings.sfxEnabled })}
         onToggleTts={() => handleUpdateSettings({ ttsEnabled: !settings.ttsEnabled })}
       />
+
+      {/* LocalStorage Auto-Save Toast Notification */}
+      {saveToast && (
+        <div className="fixed top-14 sm:top-16 right-3 sm:right-6 z-50 bg-emerald-950/90 border border-emerald-400/60 text-emerald-100 px-3 py-1.5 rounded-full text-xs font-bold shadow-xl backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-200 pointer-events-none">
+          {saveToast}
+        </div>
+      )}
 
       {/* Main River Game Canvas */}
       <div className="relative flex-1 flex flex-col overflow-hidden">
@@ -201,6 +284,7 @@ export const App: React.FC = () => {
           key={gameKey}
           currentCourse={currentCourse}
           settings={settings}
+          initialFrogsSaved={initialFrogsSaved}
           isPaused={isPaused || isVictoryOpen || isGameOverOpen || isSettingsOpen || isCourseManagerOpen}
           onUpdateStats={setStats}
           onVictory={handleVictory}
@@ -228,14 +312,13 @@ export const App: React.FC = () => {
         )}
       </div>
 
-      {/* Bottom Virtual Keyboard Guide (Optional / Toggleable) */}
+      {/* Bottom Virtual Keyboard Guide */}
       {settings.showVirtualKeyboard && (
         <div className="shrink-0 z-20">
           <VirtualKeyboard
             nextChar={nextChar}
             showFingerGuide={settings.showFingerGuide}
             onKeyPress={(char) => {
-              // Dispatch keyboard event so river game handles it identically
               window.dispatchEvent(new KeyboardEvent('keydown', { key: char }));
             }}
           />
@@ -265,7 +348,7 @@ export const App: React.FC = () => {
         isOpen={isVictoryOpen}
         stats={stats}
         currentCourse={currentCourse}
-        onPlayAgain={handleRestart}
+        onPlayAgain={() => handleRestart()}
         onNextUnit={handleNextUnit}
         onChangeCourse={() => {
           setIsVictoryOpen(false);
@@ -277,7 +360,7 @@ export const App: React.FC = () => {
         isOpen={isGameOverOpen}
         stats={stats}
         currentCourse={currentCourse}
-        onRetry={handleRestart}
+        onRetry={() => handleRestart()}
         onSwitchToEasy={() => {
           handleUpdateSettings({ difficulty: 'easy' });
           handleRestart();
