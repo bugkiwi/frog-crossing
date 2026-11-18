@@ -1,7 +1,15 @@
 /**
- * Kid-friendly English Speech Recognition Engine using the Web Speech API.
- * Supports continuous recognition, echo suppression during TTS playback,
- * strict-yet-fair elementary English word matching, and clean browser fallbacks.
+ * Kid-friendly, Stall-Proof English Speech Recognition Engine using the Web Speech API.
+ *
+ * Key Reliability Engineering:
+ * - Always creates a fresh SpeechRecognition instance on restart/onend (never reuses zombie instances).
+ * - Processes all results from event.resultIndex..results.length-1 with up to 5 alternatives.
+ * - Live speech activity telemetry (onspeechstart / onspeechend) + 3.5s speech-stall watchdog.
+ * - Preventive healthy session recycling (every ~35s when idle or every ~8 finalized utterances)
+ *   to eliminate Chrome's infamous continuous-mode silent freeze ("suddenly stops recognizing window").
+ * - Smart recently-matched echo filter instead of long mic blackouts so back-to-back words
+ *   like "in", "girl", "window" are recognized immediately without being swallowed.
+ * - Optional JSGF SpeechGrammarList hints for the active unit's vocabulary.
  */
 
 export type VoiceRecognitionStatus = 'idle' | 'listening' | 'error' | 'unsupported';
@@ -9,6 +17,7 @@ export type VoiceRecognitionStatus = 'idle' | 'listening' | 'error' | 'unsupport
 export interface VoiceRecognitionCallbacks {
   onResult: (transcript: string, alternatives: string[], isFinal: boolean) => void;
   onStatusChange: (status: VoiceRecognitionStatus) => void;
+  onSpeechActivity?: (isSpeaking: boolean) => void;
   onError?: (message: string) => void;
 }
 
@@ -38,13 +47,21 @@ interface SpeechRecognitionErrorEventLike {
   readonly message?: string;
 }
 
+interface SpeechGrammarListLike {
+  addFromString: (grammar: string, weight?: number) => void;
+}
+
 interface SpeechRecognitionInstanceLike {
   lang: string;
   continuous: boolean;
   interimResults: boolean;
   maxAlternatives: number;
+  grammars?: SpeechGrammarListLike;
   onstart: (() => void) | null;
   onend: (() => void) | null;
+  onspeechstart?: (() => void) | null;
+  onspeechend?: (() => void) | null;
+  onaudiostart?: (() => void) | null;
   onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
   start: () => void;
@@ -53,12 +70,19 @@ interface SpeechRecognitionInstanceLike {
 }
 
 type SpeechRecognitionCtor = new () => SpeechRecognitionInstanceLike;
+type SpeechGrammarListCtor = new () => SpeechGrammarListLike;
 
 /**
  * Curated phonetic homophones for Grade 1–3 English vocabulary.
- * Strictly true homophones / exact ASR equivalents so wrong words still fail cleanly.
+ * Strictly true homophones / exact ASR equivalents so unrelated wrong words still do NOT jump.
  */
 const HOMOPHONE_GROUPS: string[][] = [
+  ['in', 'inn', 'en', 'n'],
+  ['girl', 'gurl', 'girls'],
+  ['boy', 'buoy', 'boys'],
+  ['look', 'luke'],
+  ['he', 'hee'],
+  ['she', 'shi'],
   ['sun', 'son'],
   ['see', 'sea'],
   ['read', 'red'],
@@ -108,7 +132,8 @@ const HOMOPHONE_GROUPS: string[][] = [
   ['mom', 'mum'],
   ['dad', 'daddy'],
   ['grandma', 'grandmother'],
-  ['grandpa', 'grandfather']
+  ['grandpa', 'grandfather'],
+  ['jiaozi', 'dumpling', 'dumplings']
 ];
 
 const HOMOPHONE_MAP = new Map<string, Set<string>>();
@@ -122,6 +147,7 @@ for (const group of HOMOPHONE_GROUPS) {
 function normalizeSpokenText(text: string): string {
   return text
     .toLowerCase()
+    .replace(/[’]/g, "'")
     .replace(/[^a-z0-9\s']/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -139,12 +165,12 @@ function tokensMatch(spokenToken: string, targetToken: string): boolean {
   if (!spokenToken || !targetToken) return false;
   if (spokenToken === targetToken) return true;
 
-  // Plural/singular tolerance (e.g., noodle/noodles, apple/apples, shoe/shoes)
+  // Plural/singular tolerance (e.g., noodle/noodles, apple/apples, shoe/shoes, girl/girls)
   if (stemSimplePlural(spokenToken) === stemSimplePlural(targetToken)) {
     return true;
   }
 
-  // Exact phonetic homophones (e.g., sun/son, see/sea, two/to/too, four/for)
+  // Exact phonetic homophones (e.g., in/inn/en, sun/son, see/sea, two/to/too, four/for)
   const homophones = HOMOPHONE_MAP.get(targetToken);
   if (homophones && homophones.has(spokenToken)) {
     return true;
@@ -260,13 +286,32 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
+function getSpeechGrammarListCtor(): SpeechGrammarListCtor | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as {
+    SpeechGrammarList?: SpeechGrammarListCtor;
+    webkitSpeechGrammarList?: SpeechGrammarListCtor;
+  };
+  return w.SpeechGrammarList || w.webkitSpeechGrammarList || null;
+}
+
 class VoiceRecognitionEngine {
   private recognition: SpeechRecognitionInstanceLike | null = null;
   private callbacks: VoiceRecognitionCallbacks | null = null;
   private status: VoiceRecognitionStatus = 'idle';
   private shouldBeListening = false;
   private suppressedUntil = 0;
+  private audioEchoActive = false;
+  private recentlyMatched: { word: string; aliases?: string[]; until: number } | null = null;
+  private hintWords: string[] = [];
+
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private speechStallTimer: ReturnType<typeof setTimeout> | null = null;
+  private healthRecycleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private isSpeechActive = false;
+  private sessionFinalCount = 0;
+  private consecutiveNetworkErrors = 0;
 
   public isSupported(): boolean {
     return getSpeechRecognitionCtor() !== null;
@@ -282,7 +327,16 @@ class VoiceRecognitionEngine {
   }
 
   /**
-   * Temporarily ignore incoming ASR transcripts (e.g. while TTS is speaking) to avoid self-echo triggers.
+   * Supply the current unit's vocabulary as JSGF grammar hints (when supported by the browser).
+   */
+  public setHintWords(words: string[]) {
+    this.hintWords = words
+      .map((w) => normalizeSpokenText(w))
+      .filter(Boolean);
+  }
+
+  /**
+   * Temporarily ignore incoming ASR transcripts for a bounded window (e.g. demo audio playback).
    */
   public suppressFor(ms: number) {
     const until = Date.now() + ms;
@@ -291,9 +345,145 @@ class VoiceRecognitionEngine {
     }
   }
 
+  /**
+   * Tie echo suppression directly to demo audio start/end instead of blind long timeouts.
+   */
+  public setAudioEchoSuppress(active: boolean) {
+    this.audioEchoActive = active;
+    if (active) {
+      // Safety cap so a stuck audio event can never permanently mute recognition
+      this.suppressedUntil = Date.now() + 2200;
+    } else {
+      // Tiny 220ms acoustic room tail after demo audio ends
+      this.suppressedUntil = Date.now() + 220;
+    }
+  }
+
+  /**
+   * Flush the just-completed utterance cleanly and ignore ONLY exact trailing duplicates
+   * of the matched word so back-to-back words ("in", "girl", "window") trigger instantly!
+   */
+  public markRecentlyMatched(word: string, aliases?: string[], windowMs: number = 900) {
+    this.recentlyMatched = {
+      word: normalizeSpokenText(word),
+      aliases: aliases?.map((a) => normalizeSpokenText(a)).filter(Boolean),
+      until: Date.now() + windowMs
+    };
+    if (this.shouldBeListening) {
+      this.recycleSession(60);
+    }
+  }
+
   private setStatus(next: VoiceRecognitionStatus) {
     this.status = next;
     this.callbacks?.onStatusChange(next);
+  }
+
+  private setSpeechActivity(active: boolean) {
+    if (this.isSpeechActive !== active) {
+      this.isSpeechActive = active;
+      this.callbacks?.onSpeechActivity?.(active);
+    }
+  }
+
+  private clearTimers() {
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    if (this.speechStallTimer) {
+      clearTimeout(this.speechStallTimer);
+      this.speechStallTimer = null;
+    }
+    if (this.healthRecycleTimer) {
+      clearTimeout(this.healthRecycleTimer);
+      this.healthRecycleTimer = null;
+    }
+  }
+
+  private detachAndStopCurrent(abort: boolean = false) {
+    if (!this.recognition) return;
+    const oldRec = this.recognition;
+    oldRec.onstart = null;
+    oldRec.onend = null;
+    oldRec.onspeechstart = null;
+    oldRec.onspeechend = null;
+    oldRec.onaudiostart = null;
+    oldRec.onerror = null;
+    oldRec.onresult = null;
+    this.recognition = null;
+    try {
+      if (abort) oldRec.abort();
+      else oldRec.stop();
+    } catch {
+      // Ignore stop/abort errors
+    }
+  }
+
+  private scheduleHealthRecycle() {
+    if (this.healthRecycleTimer) {
+      clearTimeout(this.healthRecycleTimer);
+      this.healthRecycleTimer = null;
+    }
+    // Heartbeat safety net: if Chrome/Safari ever silently freezes without firing onend for 15s,
+    // transparently abort and respawn a brand-new recognition session!
+    this.healthRecycleTimer = setTimeout(() => {
+      if (!this.shouldBeListening) return;
+      if (this.isSpeechActive) {
+        // User is mid-word right now; re-check shortly instead of interrupting them
+        this.scheduleHealthRecycle();
+        return;
+      }
+      this.recycleSession(80);
+    }, 15000);
+  }
+
+  private armSpeechStallWatchdog() {
+    if (this.speechStallTimer) {
+      clearTimeout(this.speechStallTimer);
+    }
+    // If browser detected speech audio but cloud ASR emits ZERO results for 3.5s, recycle cleanly!
+    this.speechStallTimer = setTimeout(() => {
+      this.speechStallTimer = null;
+      if (this.shouldBeListening && this.isSpeechActive) {
+        this.setSpeechActivity(false);
+        this.recycleSession(120);
+      }
+    }, 3500);
+  }
+
+  private disarmSpeechStallWatchdog() {
+    if (this.speechStallTimer) {
+      clearTimeout(this.speechStallTimer);
+      this.speechStallTimer = null;
+    }
+  }
+
+  /**
+   * Cleanly recycle to a brand-new SpeechRecognition instance without dropping listening status.
+   */
+  private recycleSession(delayMs: number = 140) {
+    this.clearTimers();
+    this.setSpeechActivity(false);
+    this.detachAndStopCurrent(true);
+
+    if (!this.shouldBeListening) return;
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (this.shouldBeListening) {
+        this.spawnFreshSession();
+      }
+    }, delayMs);
+  }
+
+  /**
+   * Public quick-refresh for users or after a match when the Chrome results buffer grows large.
+   */
+  public restart() {
+    if (!this.isSupported()) return;
+    this.shouldBeListening = true;
+    this.consecutiveNetworkErrors = 0;
+    this.recycleSession(100);
   }
 
   public start() {
@@ -304,83 +494,153 @@ class VoiceRecognitionEngine {
       return;
     }
 
-    if (this.restartTimer) {
-      clearTimeout(this.restartTimer);
-      this.restartTimer = null;
-    }
-
     this.shouldBeListening = true;
+    this.consecutiveNetworkErrors = 0;
 
     if (this.recognition && this.status === 'listening') {
       return;
     }
 
-    try {
-      if (this.recognition) {
-        const oldRec = this.recognition;
-        oldRec.onstart = null;
-        oldRec.onend = null;
-        oldRec.onerror = null;
-        oldRec.onresult = null;
-        this.recognition = null;
-        try {
-          oldRec.abort();
-        } catch {
-          // Ignore abort errors
-        }
-      }
+    this.clearTimers();
+    this.detachAndStopCurrent(true);
+    this.spawnFreshSession();
+  }
 
+  private spawnFreshSession() {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor || !this.shouldBeListening) return;
+
+    try {
       const rec = new Ctor();
       rec.lang = 'en-US';
-      rec.continuous = true;
+      // Use single-utterance mode (continuous=false) + seamless fresh-instance auto-rearm:
+      // 1. Far faster & more accurate on isolated short words ("in", "girl", "sun", "window")
+      // 2. Guarantees a clean fresh session after every word, eliminating Chrome's permanent freeze!
+      rec.continuous = false;
       rec.interimResults = true;
       rec.maxAlternatives = 5;
 
+      // Apply optional JSGF grammar hint with current unit vocabulary if supported
+      const GrammarCtor = getSpeechGrammarListCtor();
+      if (GrammarCtor && this.hintWords.length > 0) {
+        try {
+          const unique = Array.from(new Set([...this.hintWords, 'jump', 'go']));
+          const grammar = `#JSGF V1.0; grammar vocab; public <word> = ${unique.join(' | ')} ;`;
+          const list = new GrammarCtor();
+          list.addFromString(grammar, 1);
+          rec.grammars = list;
+        } catch {
+          // Ignore grammar syntax issues in browsers that stub SpeechGrammarList
+        }
+      }
+
+      this.sessionFinalCount = 0;
+
       rec.onstart = () => {
         if (this.recognition !== rec) return;
+        this.consecutiveNetworkErrors = 0;
         this.setStatus('listening');
+        this.scheduleHealthRecycle();
+      };
+
+      rec.onspeechstart = () => {
+        if (this.recognition !== rec) return;
+        this.setSpeechActivity(true);
+        this.armSpeechStallWatchdog();
+      };
+
+      rec.onspeechend = () => {
+        if (this.recognition !== rec) return;
+        this.setSpeechActivity(false);
+        this.disarmSpeechStallWatchdog();
       };
 
       rec.onresult = (event: SpeechRecognitionEventLike) => {
         if (this.recognition !== rec) return;
-        if (Date.now() < this.suppressedUntil) {
+        this.disarmSpeechStallWatchdog();
+        this.consecutiveNetworkErrors = 0;
+
+        // Ignore echo ONLY while demo audio is actively playing (bounded by safety cap)
+        const now = Date.now();
+        if (this.audioEchoActive && now < this.suppressedUntil) {
           return;
         }
-        const latestIndex = event.results.length - 1;
-        if (latestIndex < 0) return;
-
-        const result = event.results[latestIndex];
-        const alternatives: string[] = [];
-        for (let i = 0; i < result.length; i++) {
-          const text = result[i]?.transcript?.trim();
-          if (text) alternatives.push(text);
+        if (!this.audioEchoActive && now < this.suppressedUntil) {
+          return;
         }
 
-        if (alternatives.length === 0) return;
-        this.callbacks?.onResult(alternatives[0], alternatives, result.isFinal);
+        // Collect all results from resultIndex to end so we never miss a fast interim/final transition
+        const startIdx = Math.max(0, Math.min(event.resultIndex ?? 0, event.results.length - 1));
+        for (let rIdx = startIdx; rIdx < event.results.length; rIdx++) {
+          const result = event.results[rIdx];
+          if (!result) continue;
+
+          const alternatives: string[] = [];
+          for (let i = 0; i < result.length; i++) {
+            const text = result[i]?.transcript?.trim();
+            if (text) alternatives.push(text);
+          }
+
+          if (alternatives.length === 0) continue;
+
+          if (result.isFinal) {
+            this.sessionFinalCount++;
+            this.setSpeechActivity(false);
+          }
+
+          // Smart recently-matched echo filter: skip ONLY if the utterance is solely the word just jumped on
+          // (never skip a combined utterance like "happy window" that contains the next word!)
+          if (this.recentlyMatched && now < this.recentlyMatched.until) {
+            const normPrimary = normalizeSpokenText(alternatives[0]);
+            const isOnlyJustMatched =
+              normPrimary === this.recentlyMatched.word ||
+              Boolean(this.recentlyMatched.aliases?.includes(normPrimary));
+            if (isOnlyJustMatched) {
+              continue;
+            }
+          }
+
+          this.callbacks?.onResult(alternatives[0], alternatives, result.isFinal);
+        }
+
+        // Keep Chrome's continuous results buffer lean: after 8 finalized utterances, recycle transparently
+        if (this.sessionFinalCount >= 8 && !this.isSpeechActive) {
+          this.recycleSession(100);
+        }
       };
 
       rec.onerror = (event: SpeechRecognitionErrorEventLike) => {
         if (this.recognition !== rec) return;
+        this.disarmSpeechStallWatchdog();
+        this.setSpeechActivity(false);
+
         if (event.error === 'no-speech' || event.error === 'aborted') {
-          // Normal silence or intentional restart
+          // Normal silence or intentional recycle — onend will spawn a fresh session cleanly
           return;
         }
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           this.shouldBeListening = false;
+          this.clearTimers();
           this.setStatus('error');
           this.callbacks?.onError?.('麦克风权限未开启，请在浏览器地址栏允许麦克风访问后再试。');
           return;
         }
         if (event.error === 'audio-capture') {
           this.shouldBeListening = false;
+          this.clearTimers();
           this.setStatus('error');
           this.callbacks?.onError?.('未检测到可用麦克风设备，请检查麦克风连接。');
           return;
         }
         if (event.error === 'network') {
+          this.consecutiveNetworkErrors++;
+          if (this.consecutiveNetworkErrors <= 2 && this.shouldBeListening) {
+            // Transient network hiccup: silently recycle after brief backoff instead of freezing!
+            this.recycleSession(900);
+            return;
+          }
           this.setStatus('error');
-          this.callbacks?.onError?.('语音识别服务网络异常，请检查网络或稍后重试。');
+          this.callbacks?.onError?.('语音识别服务网络异常，请检查网络后点击麦克风重试。');
           return;
         }
         this.callbacks?.onError?.(`语音识别遇到问题 (${event.error})，请重试。`);
@@ -388,16 +648,13 @@ class VoiceRecognitionEngine {
 
       rec.onend = () => {
         if (this.recognition !== rec) return;
+        this.disarmSpeechStallWatchdog();
+        this.setSpeechActivity(false);
+
         if (this.shouldBeListening) {
-          this.restartTimer = setTimeout(() => {
-            if (this.shouldBeListening && this.recognition === rec) {
-              try {
-                rec.start();
-              } catch {
-                this.setStatus('idle');
-              }
-            }
-          }, 260);
+          // ALWAYS create a fresh SpeechRecognition instance rapidly (~80ms) while keeping
+          // status='listening' seamlessly so the UI never flickers and never freezes!
+          this.recycleSession(80);
         } else {
           if (this.status !== 'error') {
             this.setStatus('idle');
@@ -409,21 +666,21 @@ class VoiceRecognitionEngine {
       try {
         rec.start();
       } catch {
-        // Rapid unit-switch / restart: give the browser 180ms to finish tearing down the previous mic session
+        // Rapid switch/recycle: give browser 180ms to finish releasing the previous mic session
         this.restartTimer = setTimeout(() => {
+          this.restartTimer = null;
           if (this.shouldBeListening && this.recognition === rec) {
             try {
               rec.start();
             } catch {
-              this.shouldBeListening = false;
-              this.setStatus('error');
-              this.callbacks?.onError?.('启动语音识别失败，请点击麦克风按钮重新开启。');
+              this.recycleSession(300);
             }
           }
         }, 180);
       }
     } catch {
       this.shouldBeListening = false;
+      this.clearTimers();
       this.setStatus('error');
       this.callbacks?.onError?.('启动语音识别失败，请点击麦克风按钮重新开启。');
     }
@@ -431,23 +688,9 @@ class VoiceRecognitionEngine {
 
   public stop() {
     this.shouldBeListening = false;
-    if (this.restartTimer) {
-      clearTimeout(this.restartTimer);
-      this.restartTimer = null;
-    }
-    if (this.recognition) {
-      const oldRec = this.recognition;
-      oldRec.onstart = null;
-      oldRec.onend = null;
-      oldRec.onerror = null;
-      oldRec.onresult = null;
-      this.recognition = null;
-      try {
-        oldRec.stop();
-      } catch {
-        // Ignore stop error if not started
-      }
-    }
+    this.clearTimers();
+    this.setSpeechActivity(false);
+    this.detachAndStopCurrent(false);
     if (this.status !== 'unsupported') {
       this.setStatus('idle');
     }

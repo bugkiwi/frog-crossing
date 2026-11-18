@@ -1,7 +1,7 @@
 import React from 'react';
 import { WordItem } from '../types';
 import { VoiceRecognitionStatus } from '../services/voiceRecognitionEngine';
-import { Mic, MicOff, Volume2, Keyboard, Sparkles, AlertCircle, Rocket } from 'lucide-react';
+import { Mic, MicOff, Volume2, Keyboard, Sparkles, AlertCircle, Rocket, RefreshCw } from 'lucide-react';
 
 export interface VoiceFeedback {
   type: 'success' | 'retry' | 'info';
@@ -12,10 +12,12 @@ interface VoiceControlPanelProps {
   targetWord: WordItem | null;
   isFinalLeap: boolean;
   voiceStatus: VoiceRecognitionStatus;
+  isHearingSpeech?: boolean;
   voiceHeard: string;
   voiceFeedback: VoiceFeedback | null;
   voiceError: string | null;
   onToggleListening: () => void;
+  onRestartMic?: () => void;
   onPlaySample: () => void;
   onFinalLeap: () => void;
   onSwitchToTyping: () => void;
@@ -25,10 +27,12 @@ export const VoiceControlPanel: React.FC<VoiceControlPanelProps> = ({
   targetWord,
   isFinalLeap,
   voiceStatus,
+  isHearingSpeech = false,
   voiceHeard,
   voiceFeedback,
   voiceError,
   onToggleListening,
+  onRestartMic,
   onPlaySample,
   onFinalLeap,
   onSwitchToTyping
@@ -137,6 +141,18 @@ export const VoiceControlPanel: React.FC<VoiceControlPanelProps> = ({
             </span>
           </button>
 
+          {/* Compact 1-tap Mic Refresh button (re-initializes speech session instantly if ever stuck) */}
+          {!isUnsupported && onRestartMic && (
+            <button
+              onClick={onRestartMic}
+              className="h-[44px] md:h-[50px] lg:h-[52px] w-[40px] md:w-[44px] flex items-center justify-center rounded-2xl bg-slate-800/90 hover:bg-slate-700 border border-slate-600/80 text-emerald-300 hover:text-emerald-200 transition cursor-pointer shrink-0 active:scale-95"
+              title="刷新重连麦克风（若识别偶发卡住点此一键恢复）"
+              aria-label="刷新重连麦克风"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          )}
+
           {/* Live Transcript & Match/Mismatch Feedback (strictly fixed 2-row layout, zero height jump!) */}
           <div
             className="flex-1 min-w-0 h-[48px] md:h-[60px] lg:h-[62px] bg-slate-900/90 border border-slate-700/80 rounded-2xl px-2.5 sm:px-3.5 flex flex-col justify-center gap-0.5 overflow-hidden"
@@ -179,6 +195,10 @@ export const VoiceControlPanel: React.FC<VoiceControlPanelProps> = ({
                 <>
                   实时识别：<span className="text-sky-300 font-mono font-bold">“{voiceHeard}”</span>
                 </>
+              ) : isHearingSpeech ? (
+                <span className="text-emerald-300 font-semibold animate-pulse">
+                  🎙️ 已捕捉到声音，正在识别单词...
+                </span>
               ) : (
                 <span className="text-slate-500">
                   {isListening ? '实时识别：正在聆听你的声音...' : '麦克风暂停中'}

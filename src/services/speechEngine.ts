@@ -80,6 +80,11 @@ function buildHumanAudioUrl(cleanText: string): string {
   return `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(cleanText)}&type=2`;
 }
 
+export interface SpeakCallbacks {
+  onStart?: () => void;
+  onEnd?: () => void;
+}
+
 class SpeechEngine {
   private enabled: boolean = true;
   private voice: SpeechSynthesisVoice | null = null;
@@ -87,6 +92,7 @@ class SpeechEngine {
   private audioCache: Map<string, HTMLAudioElement> = new Map();
   private activeAudio: HTMLAudioElement | null = null;
   private activeUtterance: SpeechSynthesisUtterance | null = null;
+  private activeOnEnd: (() => void) | null = null;
   private fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private ttsDelayTimer: ReturnType<typeof setTimeout> | null = null;
   private speakSeq: number = 0;
@@ -157,6 +163,11 @@ class SpeechEngine {
       }
     }
     this.activeUtterance = null;
+    if (this.activeOnEnd) {
+      const cb = this.activeOnEnd;
+      this.activeOnEnd = null;
+      cb();
+    }
   }
 
   /**
@@ -186,9 +197,12 @@ class SpeechEngine {
     this.audioCache.set(key, audio);
   }
 
-  private speakWithBrowserTts(cleanText: string, seq: number) {
+  private speakWithBrowserTts(cleanText: string, seq: number, callbacks?: SpeakCallbacks) {
     if (seq !== this.speakSeq) return;
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      callbacks?.onEnd?.();
+      return;
+    }
     if (!this.isInitialized) {
       this.initVoices();
     }
@@ -209,21 +223,25 @@ class SpeechEngine {
 
       // Retain reference to avoid Chrome GC cutoff mid-word
       this.activeUtterance = utterance;
-      utterance.onend = () => {
+      utterance.onstart = () => {
+        if (seq === this.speakSeq) callbacks?.onStart?.();
+      };
+      const finish = () => {
         if (this.activeUtterance === utterance) {
           this.activeUtterance = null;
         }
-      };
-      utterance.onerror = () => {
-        if (this.activeUtterance === utterance) {
-          this.activeUtterance = null;
+        if (seq === this.speakSeq) {
+          this.activeOnEnd = null;
+          callbacks?.onEnd?.();
         }
       };
+      utterance.onend = finish;
+      utterance.onerror = finish;
 
       try {
         window.speechSynthesis.speak(utterance);
       } catch {
-        // Ignore TTS failure
+        finish();
       }
     };
 
@@ -240,7 +258,7 @@ class SpeechEngine {
     }
   }
 
-  public speak(word: string, force: boolean = false) {
+  public speak(word: string, force: boolean = false, callbacks?: SpeakCallbacks) {
     if ((!this.enabled && !force) || typeof window === 'undefined') return;
 
     const cleanText = cleanPronunciationText(word);
@@ -248,10 +266,12 @@ class SpeechEngine {
 
     this.stopAll();
     const seq = this.speakSeq;
+    this.activeOnEnd = callbacks?.onEnd ?? null;
+    callbacks?.onStart?.();
 
     // If online audio previously failed (e.g. offline mode), go straight to upgraded browser TTS
     if (this.onlineAudioBlocked || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
-      this.speakWithBrowserTts(cleanText, seq);
+      this.speakWithBrowserTts(cleanText, seq, callbacks);
       return;
     }
 
@@ -274,7 +294,7 @@ class SpeechEngine {
         this.fallbackTimer = null;
       }
       this.audioCache.delete(key);
-      this.speakWithBrowserTts(cleanText, seq);
+      this.speakWithBrowserTts(cleanText, seq, callbacks);
     };
 
     audio.onplaying = () => {
@@ -293,6 +313,10 @@ class SpeechEngine {
     audio.onended = () => {
       if (this.activeAudio === audio) {
         this.activeAudio = null;
+      }
+      if (seq === this.speakSeq) {
+        this.activeOnEnd = null;
+        callbacks?.onEnd?.();
       }
     };
 

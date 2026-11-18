@@ -144,6 +144,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
   const [voiceHeard, setVoiceHeard] = useState<string>('');
   const [voiceFeedback, setVoiceFeedback] = useState<VoiceFeedback | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [isHearingSpeech, setIsHearingSpeech] = useState<boolean>(false);
 
   // Deduplicated nextChar reporter (never triggers unnecessary App re-renders in 60fps rAF loop)
   const reportNextChar = useCallback(
@@ -156,9 +157,11 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     [onNextCharChange]
   );
 
-  // Preload native human pronunciation audio for the active unit's upcoming words
+  // Preload native human pronunciation audio + supply JSGF grammar hints for the active unit's words
   useEffect(() => {
-    speechEngine.preloadWords(currentCourse.words.map((w) => w.word));
+    const unitWords = currentCourse.words.map((w) => w.word);
+    speechEngine.preloadWords(unitWords);
+    voiceRecognitionEngine.setHintWords(unitWords);
   }, [currentCourse]);
 
   // Direct GPU-composited DOM transform sync (runs at 60fps with ZERO React re-renders!)
@@ -690,7 +693,7 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       // Lane 4 -> Top Bank final voice leap ("Jump!" / "Go!" / "跳")
       if (nextLane > TOTAL_LANES) {
         if (matchFinalLeapCommand(alternatives)) {
-          voiceRecognitionEngine.suppressFor(1200);
+          voiceRecognitionEngine.markRecentlyMatched('jump', ['go', 'hop', 'up'], 950);
           setVoiceFeedback({ type: 'success', text: '读得真棒！小青蛙一跃上岸！🎉' });
           setVoiceHeard('');
           handleFinalLeap();
@@ -745,7 +748,8 @@ export const RiverGame: React.FC<RiverGameProps> = ({
         });
 
         onWordCompletedRef.current?.(matchedPad.word.word);
-        voiceRecognitionEngine.suppressFor(1400);
+        // Filter ONLY trailing echo of the word just matched (zero mic blackout for the next word!)
+        voiceRecognitionEngine.markRecentlyMatched(matchedPad.word.word, matchedPad.word.aliases, 950);
         setVoiceFeedback({
           type: 'success',
           text: `发音准确！「${matchedPad.word.word}」跳跃成功！✨`
@@ -779,12 +783,14 @@ export const RiverGame: React.FC<RiverGameProps> = ({
       setVoiceHeard('');
       setVoiceFeedback(null);
       setVoiceError(null);
+      setIsHearingSpeech(false);
       return;
     }
 
     voiceRecognitionEngine.setCallbacks({
       onResult: handleVoiceResult,
       onStatusChange: (status) => setVoiceStatus(status),
+      onSpeechActivity: (speaking) => setIsHearingSpeech(speaking),
       onError: (msg) => setVoiceError(msg)
     });
 
@@ -812,11 +818,22 @@ export const RiverGame: React.FC<RiverGameProps> = ({
     }
   }, [voiceStatus, voiceMicActive, onVoiceMicActiveChange]);
 
+  const handleRestartVoiceMic = useCallback(() => {
+    soundEngine.unlock();
+    setVoiceError(null);
+    setVoiceHeard('');
+    setVoiceFeedback({ type: 'info', text: '🔄 已刷新麦克风连接，请直接朗读目标单词！' });
+    onVoiceMicActiveChange?.(true);
+    voiceRecognitionEngine.restart();
+  }, [onVoiceMicActiveChange]);
+
   const handlePlayVoiceSample = useCallback(() => {
     const pad = padsRef.current.find((p) => p.id === targetPadIdRef.current);
     if (pad) {
-      voiceRecognitionEngine.suppressFor(1400);
-      speechEngine.speak(pad.word.word, true);
+      speechEngine.speak(pad.word.word, true, {
+        onStart: () => voiceRecognitionEngine.setAudioEchoSuppress(true),
+        onEnd: () => voiceRecognitionEngine.setAudioEchoSuppress(false)
+      });
     }
   }, []);
 
@@ -937,10 +954,9 @@ export const RiverGame: React.FC<RiverGameProps> = ({
               if (landedPad) {
                 curFrog.x = landedPad.x;
                 curFrog.y = LANE_Y[landedPad.lane];
-                if (settings.ttsEnabled) {
-                  if (isVoiceMode) {
-                    voiceRecognitionEngine.suppressFor(1350);
-                  }
+                // In Typing mode, read the word aloud on landing; in Voice mode, the child JUST pronounced
+                // this word accurately, so skip redundant speaker echo to eliminate mic blackout!
+                if (settings.ttsEnabled && !isVoiceMode) {
                   speechEngine.speak(landedPad.word.word);
                 }
               }
@@ -1194,8 +1210,10 @@ export const RiverGame: React.FC<RiverGameProps> = ({
                     setPads([...padsRef.current]);
                     reportNextChar(pad.word.word[pad.typedLength] || null);
                     if (isVoiceMode) {
-                      voiceRecognitionEngine.suppressFor(1400);
-                      speechEngine.speak(pad.word.word, true);
+                      speechEngine.speak(pad.word.word, true, {
+                        onStart: () => voiceRecognitionEngine.setAudioEchoSuppress(true),
+                        onEnd: () => voiceRecognitionEngine.setAudioEchoSuppress(false)
+                      });
                     }
                   }}
                 />
@@ -1335,10 +1353,12 @@ export const RiverGame: React.FC<RiverGameProps> = ({
             targetWord={activeTargetPad?.word ?? null}
             isFinalLeap={isFinalLeapReady}
             voiceStatus={voiceStatus}
+            isHearingSpeech={isHearingSpeech}
             voiceHeard={voiceHeard}
             voiceFeedback={voiceFeedback}
             voiceError={voiceError}
             onToggleListening={handleToggleVoiceMic}
+            onRestartMic={handleRestartVoiceMic}
             onPlaySample={handlePlayVoiceSample}
             onFinalLeap={handleFinalLeap}
             onSwitchToTyping={() => onSwitchInputMode?.('typing')}
